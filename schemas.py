@@ -3,13 +3,16 @@
 LCM_GREP = {
     "name": "lcm_grep",
     "description": (
-        "Search the plugin-local LCM database for past conversation content. "
-        "Default scope is the active session and returns both raw messages and summary nodes across all depths. "
-        "Broader scopes ('all' or 'session') must be requested explicitly and exist for bounded archive recovery "
-        "over rows already present in lcm.db, including externally backfilled rows that may carry source strings "
-        "such as openclaw-lcm:* . In broader scopes only raw-message hits are returned; cross-session summary "
-        "node expansion is intentionally deferred. Use lcm_expand(store_id=...) on a cross-session message hit "
-        "to drill into its full content. For Hermes-tracked session history outside the LCM database, use session_search."
+        "Search all conversation material archived by LCM, including old raw messages, tool outputs, and summary nodes. "
+        "Use 1-3 distinctive terms or a quoted exact phrase; long natural-language bags of words often match loosely "
+        "and bury the desired row. Results default to recency, NOT relevance, so set sort='relevance' or 'hybrid' "
+        "when recovering an older exact fact. Returned raw-message snippets can be truncated: if a promising hit does "
+        "not visibly contain the answer, call lcm_expand(store_id=...) to read that complete archived row. "
+        "Default scope is the active session and includes raw messages and summary nodes across all depths. "
+        "Broader scopes ('all' or 'session') must be requested explicitly and search rows already present in lcm.db, "
+        "including externally backfilled rows whose source may look like openclaw-lcm:*. In broader scopes only raw-message "
+        "hits are returned; cross-session summary-node expansion is intentionally deferred. For Hermes-tracked session "
+        "history outside the LCM database, use session_search."
     ),
     "parameters": {
         "type": "object",
