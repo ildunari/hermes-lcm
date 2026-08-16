@@ -317,6 +317,7 @@ ENV_FIELD_SPECS: tuple[_EnvFieldSpec, ...] = (
     _EnvFieldSpec("condensation_fanin", "LCM_CONDENSATION_FANIN", int),
     _EnvFieldSpec("dynamic_leaf_chunk_enabled", "LCM_DYNAMIC_LEAF_CHUNK_ENABLED", bool),
     _EnvFieldSpec("dynamic_leaf_chunk_max", "LCM_DYNAMIC_LEAF_CHUNK_MAX", int),
+    _EnvFieldSpec("manual_compaction_max_passes", "LCM_MANUAL_COMPACTION_MAX_PASSES", int),
     _EnvFieldSpec("cache_friendly_condensation_enabled", "LCM_CACHE_FRIENDLY_CONDENSATION_ENABLED", bool),
     _EnvFieldSpec("cache_friendly_min_debt_groups", "LCM_CACHE_FRIENDLY_MIN_DEBT_GROUPS", int),
     _EnvFieldSpec("deferred_maintenance_enabled", "LCM_DEFERRED_MAINTENANCE_ENABLED", bool),
@@ -467,6 +468,10 @@ class LCMConfig:
     dynamic_leaf_chunk_enabled: bool = False
     # Upper bound for the working dynamic leaf chunk threshold
     dynamic_leaf_chunk_max: int = 40_000
+    # Maximum bounded leaf-summary passes for an explicit manual compaction.
+    # Manual requests intentionally ignore the automatic pressure threshold but
+    # remain capped so one command cannot spend without bound.
+    manual_compaction_max_passes: int = 8
     # When enabled, suppress follow-on condensation after a leaf pass unless
     # debt/pressure says the extra churn is worth it
     cache_friendly_condensation_enabled: bool = False

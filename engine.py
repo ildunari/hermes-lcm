@@ -1670,7 +1670,16 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
             if smaller and len(smaller) < len(current_chunk):
                 return smaller
 
-        return current_chunk[:-1]
+        # The token targets above may be unable to shrink a single large
+        # assistant/tool-result group because chunk selection correctly extends
+        # through the whole group. Fall back through progressively earlier safe
+        # prefixes; abort rescue rather than bisecting a tool group.
+        for prefix_length in range(len(current_chunk) - 1, 0, -1):
+            target = count_messages_tokens(current_chunk[:prefix_length])
+            smaller = self._select_oldest_leaf_chunk(current_chunk, target)
+            if smaller and len(smaller) < len(current_chunk):
+                return smaller
+        return []
 
     def _summarize_leaf_chunk_with_rescue(
         self,
