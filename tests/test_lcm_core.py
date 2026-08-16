@@ -556,6 +556,7 @@ class TestConfig:
         assert c.large_output_transcript_gc_enabled is False
         assert c.deferred_maintenance_enabled is False
         assert c.deferred_maintenance_max_passes == 4
+        assert c.manual_compaction_max_passes == 8
         assert c.critical_budget_pressure_ratio == 0.0
         assert c.ignore_session_patterns == []
         assert c.stateless_session_patterns == []
@@ -591,6 +592,7 @@ class TestConfig:
         monkeypatch.setenv("LCM_EXPANSION_TIMEOUT_MS", "90000")
         monkeypatch.setenv("LCM_DYNAMIC_LEAF_CHUNK_ENABLED", "1")
         monkeypatch.setenv("LCM_DYNAMIC_LEAF_CHUNK_MAX", "64000")
+        monkeypatch.setenv("LCM_MANUAL_COMPACTION_MAX_PASSES", "12")
         monkeypatch.setenv("LCM_CACHE_FRIENDLY_CONDENSATION_ENABLED", "1")
         monkeypatch.setenv("LCM_CACHE_FRIENDLY_MIN_DEBT_GROUPS", "3")
         monkeypatch.setenv("LCM_CRITICAL_BUDGET_PRESSURE_RATIO", "0.92")
@@ -628,6 +630,7 @@ class TestConfig:
         assert c.expansion_timeout_ms == 90_000
         assert c.dynamic_leaf_chunk_enabled is True
         assert c.dynamic_leaf_chunk_max == 64_000
+        assert c.manual_compaction_max_passes == 12
         assert c.cache_friendly_condensation_enabled is True
         assert c.cache_friendly_min_debt_groups == 3
         assert c.critical_budget_pressure_ratio == 0.92
