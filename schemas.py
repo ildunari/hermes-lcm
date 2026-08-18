@@ -2,18 +2,7 @@
 
 LCM_GREP = {
     "name": "lcm_grep",
-    "description": (
-        "Search all conversation material archived by LCM, including old raw messages, tool outputs, and summary nodes. "
-        "Use 1-3 distinctive terms or a quoted exact phrase; long natural-language bags of words often match loosely "
-        "and bury the desired row. Results default to recency, NOT relevance, so set sort='relevance' or 'hybrid' "
-        "when recovering an older exact fact. Returned raw-message snippets can be truncated: if a promising hit does "
-        "not visibly contain the answer, call lcm_expand(store_id=...) to read that complete archived row. "
-        "Default scope is the active session and includes raw messages and summary nodes across all depths. "
-        "Broader scopes ('all' or 'session') must be requested explicitly and search rows already present in lcm.db, "
-        "including externally backfilled rows whose source may look like openclaw-lcm:*. In broader scopes only raw-message "
-        "hits are returned; cross-session summary-node expansion is intentionally deferred. For Hermes-tracked session "
-        "history outside the LCM database, use session_search."
-    ),
+    "description": "Search conversation material archived by LCM (raw messages, tool outputs, summary nodes). Use 1-3 distinctive terms or a quoted phrase. Results default to recency; set sort='relevance' or 'hybrid' for older exact facts. Snippets can be truncated \u2014 use lcm_expand(store_id=...) to read a full row. Default scope is the active session; 'all'/'session' scopes return raw-message hits only. For Hermes session history outside LCM, use session_search.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -103,14 +92,7 @@ LCM_GREP = {
 
 LCM_LOAD_SESSION = {
     "name": "lcm_load_session",
-    "description": (
-        "Load an ordered raw-message transcript page for one explicit session_id from the plugin-local LCM database. "
-        "This is enumeration, not search: it does not require a query, returns raw message content rather than snippets, "
-        "and orders rows chronologically by store_id. Use this after session_search or lcm_grep has identified a session_id "
-        "that already exists in lcm.db. Output is bounded by limit, per-row content is bounded by max_content_chars, "
-        "and row pagination uses after_store_id/next_cursor. "
-        "It returns raw rows only; cross-session summary/DAG expansion remains out of scope."
-    ),
+    "description": "Load an ordered raw-message transcript page for one explicit session_id from the LCM database. Enumeration, not search: chronological rows, paginated via after_store_id/next_cursor. Use after session_search or lcm_grep identified the session_id.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -162,16 +144,7 @@ LCM_LOAD_SESSION = {
 
 LCM_DESCRIBE = {
     "name": "lcm_describe",
-    "description": (
-        "Inspect a current-session summary node's subtree metadata WITHOUT loading full "
-        "content, or inspect an externalized payload ref without opening the "
-        "full payload. Returns token counts, child manifest, expand hints, "
-        "or externalized payload metadata/preview. Use this to plan retrieval "
-        "strategy before spending tokens on lcm_expand inside the active conversation. "
-        "For cross-session recall, use session_search first. If called with no "
-        "node_id or externalized_ref, returns the top-level DAG overview for "
-        "the current session."
-    ),
+    "description": "Inspect a summary node's subtree metadata (token counts, child manifest, expand hints) or an externalized payload ref WITHOUT loading full content. No args = top-level DAG overview. Use to plan retrieval before spending tokens on lcm_expand.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -190,16 +163,7 @@ LCM_DESCRIBE = {
 
 LCM_EXPAND = {
     "name": "lcm_expand",
-    "description": (
-        "Recover the original detail behind a summary node, externalized payload, or raw message. "
-        "Mode selection (exactly one): node_id (current session only) returns the source messages "
-        "or lower-depth summaries that were compacted into a summary node; externalized_ref "
-        "(current session only) returns a stored externalized payload's content; store_id returns "
-        "a single raw message by store_id and works across sessions, suitable for drilling into "
-        "cross-session lcm_grep results. Output is bounded by max_tokens; raw recovery is pageable "
-        "via content_offset (and source_offset/source_limit for node_id mode). For Hermes-tracked "
-        "session history outside the LCM database, prefer session_search."
-    ),
+    "description": "Recover original detail behind a summary node (node_id, current session), externalized payload (externalized_ref, current session), or single raw message (store_id, any session). Exactly one mode. Bounded by max_tokens; pageable via content_offset.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -251,17 +215,7 @@ LCM_EXPAND = {
 
 LCM_STATUS = {
     "name": "lcm_status",
-    "description": (
-        "Get a quick health overview of the LCM engine for the current session. "
-        "Shows compression count, store size, DAG depth distribution, context usage, "
-        "active configuration, session/message filter state, and rotate snapshot "
-        "state (last_rotate_at, rotate_backup_path, rotate_backup_size when a "
-        "/lcm rotate apply has been run). Use this to understand how much history "
-        "has been compacted, how the engine is performing, whether the current "
-        "session is matched by ignore or stateless session patterns, which message "
-        "noise-suppression patterns are loaded, and when the rolling rotate "
-        "backup was last written."
-    ),
+    "description": "LCM engine health overview: compression count, store size, DAG depth distribution, context usage, active config, session filter state, and rotate snapshot state.",
     "parameters": {
         "type": "object",
         "properties": {},
@@ -271,13 +225,7 @@ LCM_STATUS = {
 
 LCM_INSPECT = {
     "name": "lcm_inspect",
-    "description": (
-        "Inspect read-only LCM metadata for the current session: session/conversation "
-        "lineage, message frontier and fresh tail, DAG compaction frontier, latest "
-        "compaction skip/no-op reason, externalized payload refs and readability, "
-        "and matched ignore/stateless patterns. This is an operator inventory tool; "
-        "use lcm_grep/lcm_load_session/lcm_expand when you need actual content."
-    ),
+    "description": "Read-only LCM metadata for the current session: lineage, message frontier, fresh tail, compaction frontier and skip reason, externalized refs, matched ignore/stateless patterns. Inventory only \u2014 use lcm_grep/lcm_expand for content.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -293,12 +241,7 @@ LCM_INSPECT = {
 
 LCM_DOCTOR = {
     "name": "lcm_doctor",
-    "description": (
-        "Run diagnostics on the LCM database and configuration. Checks database "
-        "integrity, detects orphaned DAG nodes, validates configuration, and "
-        "reports potential issues. Use this to troubleshoot problems or verify "
-        "a healthy setup."
-    ),
+    "description": "Run LCM diagnostics: database integrity, orphaned DAG nodes, config validation, potential issues.",
     "parameters": {
         "type": "object",
         "properties": {},
@@ -308,13 +251,7 @@ LCM_DOCTOR = {
 
 LCM_EXPAND_QUERY = {
     "name": "lcm_expand_query",
-    "description": (
-        "Answer a natural-language question using expanded LCM context from the current session. Provide a prompt, and either "
-        "query matching summaries/raw messages to expand or explicit node_ids to inspect. Uses the expansion path "
-        "instead of the summarization path so retrieval/synthesis can use a different model or timeout. "
-        "When expanding parent summary nodes, it recursively descends the DAG under the context budget to include leaf evidence where possible. "
-        "Prefer this for questions about the active conversation after compaction; for cross-session recall, use session_search first."
-    ),
+    "description": "Answer a question using expanded LCM context from the current session: give a prompt plus either a query to find candidate summaries or explicit node_ids. Descends the DAG under the context budget. For cross-session recall use session_search first.",
     "parameters": {
         "type": "object",
         "properties": {
