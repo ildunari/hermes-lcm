@@ -12,9 +12,11 @@ DOCTOR_ACTION_INSPECT = "inspect"
 DOCTOR_ACTION_BACKUP_FIRST_CLEANUP = "backup-first cleanup"
 
 
-def _enforce_state_db_containment(path: Path, *, description: str) -> Path:
+def _enforce_state_db_containment(
+    path: Path, *, description: str, configured_base: str = ""
+) -> Path:
     resolved = path.expanduser().resolve()
-    env_base = os.environ.get("LCM_HERMES_BASE_DIR")
+    env_base = os.environ.get("LCM_HERMES_BASE_DIR") or configured_base
     if env_base:
         allowed_base = Path(env_base).expanduser().resolve()
         try:
@@ -33,15 +35,18 @@ def state_db_path_for_engine(engine: Any) -> Path:
     configured, enforce the same containment guard for all diagnostic surfaces.
     """
     hermes_home = getattr(engine, "_hermes_home", "") or ""
+    configured_base = getattr(getattr(engine, "_config", None), "hermes_base_dir", "")
     if hermes_home:
         return _enforce_state_db_containment(
             Path(hermes_home) / "state.db",
             description=f"hermes_home {hermes_home}",
+            configured_base=configured_base,
         )
     db_path = Path(getattr(engine._store, "db_path", Path.home() / ".hermes" / "lcm.db"))
     return _enforce_state_db_containment(
         db_path.parent / "state.db",
         description=f"state database fallback from LCM database {db_path}",
+        configured_base=configured_base,
     )
 
 

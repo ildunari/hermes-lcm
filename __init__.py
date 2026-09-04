@@ -19,6 +19,21 @@ def _env_flag_enabled(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _plugin_flag_enabled(ctx, key: str, env_name: str, default: bool = False) -> bool:
+    """Read a normal plugin setting while preserving explicit legacy env overrides."""
+    if env_name in os.environ:
+        return _env_flag_enabled(env_name, default=default)
+    get_config = getattr(ctx, "get_config", None)
+    if not callable(get_config):
+        return default
+    value = get_config(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _make_wrapped_handler(tool_name: str, engine):
     """Route a registered lcm_* tool through the engine dispatch path."""
     def _wrapped(args: dict, **kwargs) -> str:
@@ -93,16 +108,15 @@ def register(ctx):
         LCM_DOCTOR,
     )
 
-    config = LCMConfig.from_env()
+    config = LCMConfig.from_plugin_context(ctx)
 
     # Resolve hermes_home for profile-scoped storage
     hermes_home = ""
     try:
-        from hermes_cli.config import get_hermes_home
+        from hermes_constants import get_hermes_home
         hermes_home = str(get_hermes_home())
     except Exception:
-        import os
-        hermes_home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
+        hermes_home = os.path.expanduser("~/.hermes")
 
     engine = LCMEngine(config=config, hermes_home=hermes_home)
 
@@ -178,7 +192,12 @@ def register(ctx):
         )
 
     register_command = getattr(ctx, "register_command", None)
-    slash_enabled = _env_flag_enabled("LCM_ENABLE_SLASH_COMMAND", default=False)
+    slash_enabled = _plugin_flag_enabled(
+        ctx,
+        "enable_slash_command",
+        "LCM_ENABLE_SLASH_COMMAND",
+        default=False,
+    )
     if callable(register_command) and slash_enabled:
         from .command import handle_lcm_command
 
@@ -188,7 +207,10 @@ def register(ctx):
             description="LCM status and diagnostics",
         )
     elif callable(register_command):
-        logger.info("LCM slash command registration disabled (set LCM_ENABLE_SLASH_COMMAND=1 to enable /lcm)")
+        logger.info(
+            "LCM slash command registration disabled (set plugin setting "
+            "enable_slash_command: true to enable /lcm)"
+        )
     else:
         logger.info("LCM slash command registration unavailable on this Hermes host; continuing without /lcm")
 
@@ -202,9 +224,6 @@ def register(ctx):
     # existing _ingest_messages cursor prevents duplicates if compress() runs
     # later the same turn.
     try:
-        from hermes_cli.plugins import get_plugin_manager as _get_pm
-        _mgr = _get_pm()
-
         def _on_post_llm_call(**kwargs):
             history = kwargs.get("conversation_history")
             if not history:
@@ -246,7 +265,11 @@ def register(ctx):
             except Exception as exc:
                 logger.debug("LCM post_llm_call ingest error: %s", exc)
 
-        _mgr._hooks.setdefault("post_llm_call", []).append(_on_post_llm_call)
+        if callable(register_hook):
+            register_hook("post_llm_call", _on_post_llm_call)
+        else:
+            from hermes_cli.plugins import get_plugin_manager as _get_pm
+            _get_pm()._hooks.setdefault("post_llm_call", []).append(_on_post_llm_call)
         logger.debug("LCM registered post_llm_call hook for per-turn ingest")
     except Exception as exc:
         logger.debug("LCM could not register post_llm_call hook: %s", exc)

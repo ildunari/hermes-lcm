@@ -164,6 +164,29 @@ context:
   engine: lcm
 ```
 
+Behavioral settings belong to the normal plugin namespace. For an install at
+`~/.hermes/plugins/context_engine/hermes-lcm`, configure the path-derived plugin
+id like this:
+
+```yaml
+plugins:
+  enabled:
+    - hermes-lcm
+  entries:
+    context_engine/hermes-lcm:
+      settings:
+        context_threshold: 0.61
+        fresh_tail_count: 24
+        dynamic_leaf_chunk_enabled: true
+
+context:
+  engine: lcm
+```
+
+Flat installs at `~/.hermes/plugins/hermes-lcm` use `hermes-lcm` as the entry
+id. Explicit legacy `LCM_*` environment variables remain supported and take
+precedence, but Hermes does not need to synthesize or mutate them.
+
 Restart Hermes after changing plugin or context-engine config.
 
 ### Verify it loaded
@@ -307,7 +330,10 @@ known-good rolling backup.
 
 ## Configuration
 
-Most installs only need `plugins.enabled` and `context.engine: lcm`.
+Most installs only need `plugins.enabled` and `context.engine: lcm`. Configure
+optional behavior through `plugins.entries.<plugin-id>.settings` using the
+lowercase setting names shown by each legacy variable below (for example,
+`LCM_FRESH_TAIL_COUNT` becomes `fresh_tail_count`).
 
 ### Common settings
 

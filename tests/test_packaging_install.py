@@ -177,6 +177,44 @@ def test_plugin_manifest_lists_all_registered_tools():
         assert f"  - {tool_name}\n" in manifest
 
 
+def test_normal_plugin_registration_uses_context_settings_and_owned_hook(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+    monkeypatch.delenv("LCM_CONTEXT_THRESHOLD", raising=False)
+    module = _load_plugin_entrypoint_module("hermes_lcm_normal_plugin")
+
+    class _Ctx:
+        def __init__(self):
+            self.engine = None
+            self.hooks = {}
+
+        def get_config(self, key, default=None):
+            settings = {
+                "context_threshold": 0.58,
+                "fresh_tail_count": 19,
+                "enable_slash_command": False,
+            }
+            return settings.get(key, default)
+
+        def register_context_engine(self, engine):
+            self.engine = engine
+
+        def register_tool(self, *args, **kwargs):
+            return None
+
+        def register_hook(self, name, handler):
+            self.hooks.setdefault(name, []).append(handler)
+
+    ctx = _Ctx()
+    module.register(ctx)
+
+    assert ctx.engine is not None
+    assert ctx.engine._config.context_threshold == 0.58
+    assert ctx.engine._config.fresh_tail_count == 19
+    assert len(ctx.hooks["post_llm_call"]) == 1
+
+
 def test_install_script_creates_profile_aware_symlink_and_prints_activation_steps(tmp_path):
     repo_root = Path(__file__).resolve().parent.parent
     hermes_home = tmp_path / "hermes-home"

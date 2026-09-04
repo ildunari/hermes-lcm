@@ -22,7 +22,7 @@ def test_path_containment_within_allowed_base(monkeypatch):
         # Should succeed without raising
         path = _state_db_path_for_engine(engine)
         assert path.is_absolute()
-        assert str(path).startswith(tmpdir)
+        assert path.is_relative_to(Path(tmpdir).resolve())
 
 
 def test_path_containment_outside_allowed_base(monkeypatch):
@@ -147,6 +147,21 @@ def test_externalization_path_strict_containment_when_base_set(monkeypatch, tmp_
     monkeypatch.setenv("LCM_HERMES_BASE_DIR", str(tmp_path / "allowed"))
 
     class Config:
+        large_output_externalization_path = str(tmp_path / "elsewhere" / "payloads")
+
+    with pytest.raises(ValueError):
+        get_large_output_storage_dir(
+            Config(), hermes_home=str(tmp_path / "allowed" / "hermes"), create=False
+        )
+
+
+def test_externalization_path_strict_containment_from_config(monkeypatch, tmp_path):
+    from hermes_lcm.externalize import get_large_output_storage_dir
+
+    monkeypatch.delenv("LCM_HERMES_BASE_DIR", raising=False)
+
+    class Config:
+        hermes_base_dir = str(tmp_path / "allowed")
         large_output_externalization_path = str(tmp_path / "elsewhere" / "payloads")
 
     with pytest.raises(ValueError):

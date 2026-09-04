@@ -267,6 +267,12 @@ def test_non_finite_interval_falls_back_to_default(monkeypatch):
         )
 
 
+def test_configured_interval_is_used_without_environment_mutation(monkeypatch):
+    monkeypatch.delenv(INTERVAL_ENV, raising=False)
+
+    assert db_bootstrap._integrity_check_interval_hours(6.0) == 6.0
+
+
 def test_check_disk_space_uses_portable_fallback_when_statvfs_is_unavailable(monkeypatch, tmp_path):
     """Windows lacks os.statvfs, so startup FTS repair must not crash there."""
     monkeypatch.delattr(db_bootstrap.os, "statvfs", raising=False)

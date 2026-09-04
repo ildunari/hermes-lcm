@@ -276,6 +276,11 @@ class MessageStore:
         ensure_external_content_fts(
             self._conn,
             build_message_fts_spec(),
+            integrity_check_interval_hours=getattr(
+                self._ingest_protection_config,
+                "fts_integrity_check_interval_hours",
+                None,
+            ),
         )
         run_versioned_migrations(self._conn)
         self._ensure_source_column()

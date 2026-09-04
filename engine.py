@@ -533,7 +533,7 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
         explicit_lcm_override = source in {
             "env:LCM_CONTEXT_THRESHOLD",
             "config_yaml:lcm.context_threshold",
-        }
+        } or source == "plugin_config:context_threshold"
         route_model = self.model if model is None else model
         route_provider = self.provider if provider is None else provider
         if (
@@ -1445,7 +1445,9 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
 
     def _get_allowed_hermes_base(self) -> Path | None:
         """Get the allowed base directory for hermes_home, or None if not restricted."""
-        env_base = os.environ.get("LCM_HERMES_BASE_DIR")
+        env_base = os.environ.get("LCM_HERMES_BASE_DIR") or getattr(
+            self._config, "hermes_base_dir", ""
+        )
         if env_base:
             return Path(env_base).expanduser().resolve()
         return None  # No restriction when env var not set
@@ -1457,11 +1459,17 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
             return _enforce_state_db_containment(
                 Path(hermes_home) / "state.db",
                 description=f"hermes_home {hermes_home}",
+                configured_base=getattr(
+                    getattr(self, "_config", None), "hermes_base_dir", ""
+                ),
             )
         db_path = Path(self._store.db_path)
         return _enforce_state_db_containment(
             db_path.parent / "state.db",
             description=f"state database fallback from LCM database {db_path}",
+            configured_base=getattr(
+                getattr(self, "_config", None), "hermes_base_dir", ""
+            ),
         )
 
     def _clear_pending_reset_boundary(self) -> None:

@@ -422,13 +422,15 @@ INTEGRITY_CHECK_INTERVAL_ENV = "LCM_FTS_INTEGRITY_CHECK_INTERVAL_HOURS"
 DEFAULT_INTEGRITY_CHECK_INTERVAL_HOURS = 24.0
 
 
-def _integrity_check_interval_hours() -> float:
+def _integrity_check_interval_hours(configured: float | None = None) -> float:
     """Hours between startup FTS deep integrity-checks.
 
     ``0`` checks on every startup (previous behavior); a negative value never
     checks on startup (relies on structural checks + LIKE fallback + doctor).
     """
     raw = os.environ.get(INTEGRITY_CHECK_INTERVAL_ENV)
+    if raw is None and configured is not None:
+        raw = configured
     if raw is None:
         return DEFAULT_INTEGRITY_CHECK_INTERVAL_HOURS
     try:
@@ -478,9 +480,13 @@ def _record_integrity_checked(
 
 
 def _should_run_integrity_check(
-    conn: sqlite3.Connection, spec: ExternalContentFtsSpec, *, now: float | None = None
+    conn: sqlite3.Connection,
+    spec: ExternalContentFtsSpec,
+    *,
+    now: float | None = None,
+    integrity_check_interval_hours: float | None = None,
 ) -> bool:
-    hours = _integrity_check_interval_hours()
+    hours = _integrity_check_interval_hours(integrity_check_interval_hours)
     if hours == 0:
         return True
     if hours < 0:
@@ -498,6 +504,7 @@ def _fts_needs_rebuild(
     *,
     now: float | None = None,
     throttle: bool = False,
+    integrity_check_interval_hours: float | None = None,
 ) -> bool:
     if _fts_needs_rebuild_structural(conn, spec):
         return True
@@ -507,7 +514,12 @@ def _fts_needs_rebuild(
     # Explicit repair (e.g. ``/lcm doctor repair apply``) uses ``throttle=False``
     # so it always runs the deep check and can fix same-row-count drift that the
     # structural checks cannot see.
-    if throttle and not _should_run_integrity_check(conn, spec, now=now):
+    if throttle and not _should_run_integrity_check(
+        conn,
+        spec,
+        now=now,
+        integrity_check_interval_hours=integrity_check_interval_hours,
+    ):
         return False
     result = check_external_content_fts_integrity(conn, spec)
     if result["status"] == "pass":
@@ -621,10 +633,17 @@ def repair_external_content_fts(
     *,
     now: float | None = None,
     throttle: bool = False,
+    integrity_check_interval_hours: float | None = None,
 ) -> dict[str, bool]:
     rebuilt = False
     degraded = False
-    if _fts_needs_rebuild(conn, spec, now=now, throttle=throttle):
+    if _fts_needs_rebuild(
+        conn,
+        spec,
+        now=now,
+        throttle=throttle,
+        integrity_check_interval_hours=integrity_check_interval_hours,
+    ):
         db_path = conn.execute("PRAGMA database_list").fetchone()
         if db_path:
             db_file = db_path[2]
@@ -664,11 +683,21 @@ def repair_external_content_fts(
 
 
 def ensure_external_content_fts(
-    conn: sqlite3.Connection, spec: ExternalContentFtsSpec, *, now: float | None = None
+    conn: sqlite3.Connection,
+    spec: ExternalContentFtsSpec,
+    *,
+    now: float | None = None,
+    integrity_check_interval_hours: float | None = None,
 ) -> None:
     # Startup path: throttle the deep integrity-check. Explicit repair callers
     # use ``repair_external_content_fts(..., throttle=False)`` for a forced check.
-    repair_external_content_fts(conn, spec, now=now, throttle=True)
+    repair_external_content_fts(
+        conn,
+        spec,
+        now=now,
+        throttle=True,
+        integrity_check_interval_hours=integrity_check_interval_hours,
+    )
 
 
 def run_versioned_migrations(conn: sqlite3.Connection) -> None:

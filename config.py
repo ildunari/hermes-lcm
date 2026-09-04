@@ -1,4 +1,4 @@
-"""LCM configuration with defaults and env var overrides."""
+"""LCM configuration with plugin settings and legacy env overrides."""
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -296,6 +296,8 @@ ENV_FIELD_SPECS: tuple[_EnvFieldSpec, ...] = (
     _EnvFieldSpec("summary_timeout_ms", "LCM_SUMMARY_TIMEOUT_MS", int),
     _EnvFieldSpec("expansion_timeout_ms", "LCM_EXPANSION_TIMEOUT_MS", int),
     _EnvFieldSpec("database_path", "LCM_DATABASE_PATH", str),
+    _EnvFieldSpec("fts_integrity_check_interval_hours", "LCM_FTS_INTEGRITY_CHECK_INTERVAL_HOURS", float),
+    _EnvFieldSpec("hermes_base_dir", "LCM_HERMES_BASE_DIR", str),
     _EnvFieldSpec("new_session_retain_depth", "LCM_NEW_SESSION_RETAIN_DEPTH", int),
     _EnvFieldSpec("doctor_clean_apply_enabled", "LCM_DOCTOR_CLEAN_APPLY_ENABLED", bool),
     _EnvFieldSpec("empty_lifecycle_gc_enabled", "LCM_EMPTY_LIFECYCLE_GC_ENABLED", bool),
@@ -330,6 +332,34 @@ _PRESET_ENV_FIELDS = frozenset({
     "condensation_fanin",
     "incremental_max_depth",
 })
+
+_MISSING = object()
+
+
+def _coerce_plugin_setting(value: Any, value_type: type) -> Any:
+    """Coerce one PluginContext setting using the legacy env semantics."""
+    if value_type is str:
+        return str(value)
+    if value_type is bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)) and value in {0, 1}:
+            return bool(value)
+        normalized = str(value).strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        raise ValueError("expected a boolean")
+    if value_type is int:
+        if isinstance(value, bool):
+            raise ValueError("expected an integer")
+        return int(value)
+    if value_type is float:
+        if isinstance(value, bool):
+            raise ValueError("expected a number")
+        return float(value)
+    raise TypeError(f"unsupported setting type: {value_type!r}")
 
 
 @dataclass
@@ -472,6 +502,8 @@ class LCMConfig:
 
     # -- Storage ---
     database_path: str = ""       # empty = HERMES_HOME/lcm.db; LCM_DATABASE_PATH may override
+    fts_integrity_check_interval_hours: float = 24.0
+    hermes_base_dir: str = ""
 
     # -- Session carry-over ---
     # Depth retained after /new (-1 = all, 0 = nothing, 2 = keep d2+)
@@ -607,3 +639,81 @@ class LCMConfig:
         c.config_sources = config_sources
         c.config_source_warnings = config_source_warnings
         return c
+
+    @classmethod
+    def from_plugin_context(cls, ctx) -> "LCMConfig":
+        """Build profile-scoped config through ``PluginContext.get_config``.
+
+        Normal Hermes plugins own behavioral settings under
+        ``plugins.entries.<plugin-id>.settings``. Legacy ``LCM_*`` variables
+        remain supported as explicit operator overrides and therefore win
+        when present, but Hermes no longer needs to mutate process-global
+        environment state to configure this plugin.
+        """
+        config = cls.from_env()
+        get_config = getattr(ctx, "get_config", None)
+        if not callable(get_config):
+            return config
+
+        def _read(key: str):
+            return get_config(key, _MISSING)
+
+        for spec in ENV_FIELD_SPECS:
+            if spec.env_key in os.environ:
+                continue
+            raw = _read(spec.name)
+            if raw is _MISSING:
+                continue
+            try:
+                value = _coerce_plugin_setting(raw, spec.py_type)
+            except (TypeError, ValueError) as exc:
+                config.config_source_warnings.append(
+                    f"invalid plugin setting {spec.name}={raw!r} ignored: {exc}"
+                )
+                continue
+            setattr(config, spec.name, value)
+            config.config_sources[spec.name] = f"plugin_config:{spec.name}"
+
+        list_settings = (
+            ("sensitive_patterns", "LCM_SENSITIVE_PATTERNS", "sensitive_patterns_source"),
+            ("summary_fallback_models", "LCM_SUMMARY_FALLBACK_MODELS", None),
+            ("ignore_session_patterns", "LCM_IGNORE_SESSION_PATTERNS", "ignore_session_patterns_source"),
+            ("stateless_session_patterns", "LCM_STATELESS_SESSION_PATTERNS", "stateless_session_patterns_source"),
+            ("ignore_message_patterns", "LCM_IGNORE_MESSAGE_PATTERNS", "ignore_message_patterns_source"),
+        )
+        for field_name, env_key, source_field in list_settings:
+            if env_key in os.environ:
+                continue
+            raw = _read(field_name)
+            if raw is _MISSING:
+                continue
+            if isinstance(raw, str):
+                value = _parse_pattern_list(raw)
+            elif isinstance(raw, (list, tuple)):
+                value = [str(item).strip() for item in raw if str(item).strip()]
+            else:
+                config.config_source_warnings.append(
+                    f"invalid plugin setting {field_name}={raw!r} ignored: expected a list or comma-separated string"
+                )
+                continue
+            setattr(config, field_name, value)
+            config.config_sources[field_name] = f"plugin_config:{field_name}"
+            if source_field:
+                setattr(config, source_field, "plugin_config")
+
+        if "LCM_EMPTY_LIFECYCLE_GC_MAX_AGE_HOURS" not in os.environ:
+            raw = _read("empty_lifecycle_gc_max_age_hours")
+            if raw is not _MISSING:
+                try:
+                    config.empty_lifecycle_gc_max_age_hours = float(raw)
+                    config.config_sources["empty_lifecycle_gc_max_age_hours"] = (
+                        "plugin_config:empty_lifecycle_gc_max_age_hours"
+                    )
+                except (TypeError, ValueError):
+                    config.config_source_warnings.append(
+                        "invalid plugin setting empty_lifecycle_gc_max_age_hours="
+                        f"{raw!r} ignored: expected a number"
+                    )
+
+        config.fresh_tail_max_tokens = max(0, config.fresh_tail_max_tokens)
+        return config

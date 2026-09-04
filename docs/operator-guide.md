@@ -132,8 +132,12 @@ run `lcm_status` or `/lcm status` again for live per-session fields.
 
 ## Configuration
 
-Most installs only need `plugins.enabled` and `context.engine: lcm`. Useful
-environment variables:
+Most installs only need `plugins.enabled` and `context.engine: lcm`. Put
+behavioral settings under `plugins.entries.<plugin-id>.settings` using lowercase
+names without the `LCM_` prefix. A category install at
+`plugins/context_engine/hermes-lcm` uses plugin id
+`context_engine/hermes-lcm`; a flat install uses `hermes-lcm`. The environment
+variables below remain explicit legacy overrides and take precedence:
 
 | Variable | Default | Use |
 |----------|---------|-----|

@@ -95,7 +95,9 @@ def get_large_output_storage_dir(config, hermes_home: str = "", *, create: bool)
     if configured:
         path = Path(configured).expanduser().resolve()
         # Check containment for configured paths when LCM_HERMES_BASE_DIR is set
-        env_base = os.environ.get("LCM_HERMES_BASE_DIR")
+        env_base = os.environ.get("LCM_HERMES_BASE_DIR") or getattr(
+            config, "hermes_base_dir", ""
+        )
         if env_base:
             allowed_base = Path(env_base).expanduser().resolve()
             try:
@@ -117,7 +119,9 @@ def get_large_output_storage_dir(config, hermes_home: str = "", *, create: bool)
         path = base / DEFAULT_LARGE_OUTPUT_DIRNAME
         # Check containment within allowed base for default/hermes_home-based paths
         # Only enforced when LCM_HERMES_BASE_DIR is explicitly set
-        env_base = os.environ.get("LCM_HERMES_BASE_DIR")
+        env_base = os.environ.get("LCM_HERMES_BASE_DIR") or getattr(
+            config, "hermes_base_dir", ""
+        )
         if env_base:
             allowed_base = Path(env_base).expanduser().resolve()
             try:

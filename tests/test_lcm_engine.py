@@ -1490,11 +1490,11 @@ class TestEngineABC:
         expand_schema = next(s for s in schemas if s["name"] == "lcm_expand")
         expand_query_schema = next(s for s in schemas if s["name"] == "lcm_expand_query")
 
-        assert "current session" in describe_schema["description"].lower()
-        assert "session_search" in describe_schema["description"]
+        assert "top-level dag overview" in describe_schema["description"].lower()
+        assert "lcm_expand" in describe_schema["description"]
         # lcm_expand picked up a third mode (store_id); its description must surface that.
         assert "store_id" in expand_schema["description"]
-        assert "session_search" in expand_schema["description"]
+        assert "any session" in expand_schema["description"].lower()
         expand_props = expand_schema["parameters"]["properties"]
         assert "source_offset" in expand_props
         assert "source_limit" in expand_props

@@ -3,6 +3,7 @@
 import copy
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -647,6 +648,59 @@ class TestConfig:
         assert c.large_output_active_replay_stubbing_enabled is True
         assert c.large_output_active_replay_stub_threshold_tokens == 8192
         assert c.large_output_transcript_gc_enabled is True
+
+    def test_from_plugin_context_reads_profile_scoped_settings_without_env_mutation(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        monkeypatch.delenv("LCM_CONTEXT_THRESHOLD", raising=False)
+        monkeypatch.delenv("LCM_DYNAMIC_LEAF_CHUNK_ENABLED", raising=False)
+        settings = {
+            "context_threshold": 0.61,
+            "dynamic_leaf_chunk_enabled": True,
+            "ignore_session_patterns": ["cron:*", "subagent:**"],
+            "summary_fallback_models": "fast-model, reliable-model",
+            "empty_lifecycle_gc_max_age_hours": 12,
+            "fts_integrity_check_interval_hours": 6,
+            "hermes_base_dir": str(tmp_path / "allowed"),
+        }
+
+        class _Ctx:
+            def get_config(self, key, default=None):
+                return settings.get(key, default)
+
+        before = dict(os.environ)
+        config = LCMConfig.from_plugin_context(_Ctx())
+
+        assert config.context_threshold == 0.61
+        assert config.dynamic_leaf_chunk_enabled is True
+        assert config.ignore_session_patterns == ["cron:*", "subagent:**"]
+        assert config.ignore_session_patterns_source == "plugin_config"
+        assert config.summary_fallback_models == ["fast-model", "reliable-model"]
+        assert config.empty_lifecycle_gc_max_age_hours == 12
+        assert config.fts_integrity_check_interval_hours == 6
+        assert config.hermes_base_dir == str(tmp_path / "allowed")
+        assert config.config_sources["context_threshold"] == (
+            "plugin_config:context_threshold"
+        )
+        assert dict(os.environ) == before
+
+    def test_from_plugin_context_preserves_explicit_env_override(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        monkeypatch.setenv("LCM_CONTEXT_THRESHOLD", "0.72")
+
+        class _Ctx:
+            def get_config(self, key, default=None):
+                if key == "context_threshold":
+                    return 0.44
+                return default
+
+        config = LCMConfig.from_plugin_context(_Ctx())
+
+        assert config.context_threshold == 0.72
+        assert config.config_sources["context_threshold"] == "env:LCM_CONTEXT_THRESHOLD"
 
     def test_from_env_invalid_numeric_values_fall_back_to_defaults(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "empty-hermes-home"))
