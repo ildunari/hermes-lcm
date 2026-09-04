@@ -373,12 +373,21 @@ def test_codex_oauth_context_cap_keeps_explicit_lcm_threshold(tmp_path):
         engine.shutdown()
 
 
-def test_codex_oauth_context_cap_keeps_lcm_config_yaml_threshold_override(tmp_path):
+@pytest.mark.parametrize(
+    "source",
+    (
+        "config_yaml:context.lcm.context_threshold",
+        "config_yaml:lcm.context_threshold",
+    ),
+)
+def test_codex_oauth_context_cap_keeps_lcm_config_yaml_threshold_override(
+    tmp_path, source
+):
     config = LCMConfig(
         context_threshold=0.62,
         database_path=str(tmp_path / "codex-lcm-yaml-threshold.db"),
     )
-    config.config_sources["context_threshold"] = "config_yaml:lcm.context_threshold"
+    config.config_sources["context_threshold"] = source
     engine = LCMEngine(config=config)
     try:
         engine.update_model(
@@ -391,7 +400,7 @@ def test_codex_oauth_context_cap_keeps_lcm_config_yaml_threshold_override(tmp_pa
         assert engine.context_length == 272_000
         assert engine.context_threshold == 0.62
         assert engine.threshold_tokens == int(272_000 * 0.62)
-        assert engine._context_threshold_source == "config_yaml:lcm.context_threshold"
+        assert engine._context_threshold_source == source
         assert engine._context_threshold_autoraised is None
     finally:
         engine.shutdown()

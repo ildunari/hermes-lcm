@@ -530,6 +530,38 @@ class TestProviderPrefixedAuxiliaryCalls:
 
 
 class TestConfig:
+    def test_from_env_uses_active_hermes_profile_without_process_env_mutation(
+        self, monkeypatch, tmp_path
+    ):
+        import hermes_lcm.config as config_mod
+
+        root_home = tmp_path / "root"
+        active_home = tmp_path / "active"
+        root_home.mkdir()
+        active_home.mkdir()
+        (root_home / "config.yaml").write_text(
+            "context:\n  lcm:\n    fresh_tail_count: 111\n"
+        )
+        (active_home / "config.yaml").write_text(
+            "context:\n  lcm:\n    fresh_tail_count: 222\n"
+        )
+
+        hermes_constants = ModuleType("hermes_constants")
+        hermes_constants.get_hermes_home = lambda: active_home
+        monkeypatch.setitem(sys.modules, "hermes_constants", hermes_constants)
+        monkeypatch.setattr(
+            config_mod,
+            "os",
+            SimpleNamespace(environ={"HERMES_HOME": str(root_home)}),
+        )
+
+        c = LCMConfig.from_env()
+
+        assert c.fresh_tail_count == 222
+        assert c.config_sources["fresh_tail_count"] == (
+            "config_yaml:context.lcm.fresh_tail_count"
+        )
+
     def test_defaults(self):
         c = LCMConfig()
         assert c.fresh_tail_count == 32
@@ -723,6 +755,58 @@ class TestConfig:
         assert c.reserve_tokens_floor == 0
         assert c.expansion_context_tokens == 32_000
         assert c.critical_budget_pressure_ratio == 0.0
+
+    def test_from_env_invalid_canonical_threshold_warns_and_uses_compression_fallback(
+        self, monkeypatch, tmp_path
+    ):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "context:\n"
+            "  lcm:\n"
+            "    context_threshold: invalid\n"
+            "compression:\n"
+            "  threshold: 0.64\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("LCM_CONTEXT_THRESHOLD", raising=False)
+
+        c = LCMConfig.from_env()
+
+        assert c.context_threshold == 0.64
+        assert c.config_sources["context_threshold"] == (
+            "config_yaml:compression.threshold"
+        )
+        assert any(
+            "invalid config_yaml:context.lcm.context_threshold" in warning
+            for warning in c.config_source_warnings
+        )
+
+    def test_from_env_invalid_canonical_scalar_warns_and_keeps_legacy_fallback(
+        self, monkeypatch, tmp_path
+    ):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "lcm:\n"
+            "  fresh_tail_count: 111\n"
+            "context:\n"
+            "  lcm:\n"
+            "    fresh_tail_count: invalid\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("LCM_FRESH_TAIL_COUNT", raising=False)
+
+        c = LCMConfig.from_env()
+
+        assert c.fresh_tail_count == 111
+        assert c.config_sources["fresh_tail_count"] == (
+            "config_yaml:lcm.fresh_tail_count"
+        )
+        assert any(
+            "invalid config_yaml:context.lcm.fresh_tail_count" in warning
+            for warning in c.config_source_warnings
+        )
 
     def test_from_env_reads_hermes_compression_threshold_when_lcm_env_missing(self, monkeypatch, tmp_path):
         hermes_home = tmp_path / "hermes"
