@@ -868,6 +868,7 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
         )
         explicit_lcm_override = source in {
             "env:LCM_CONTEXT_THRESHOLD",
+            "config_yaml:context.lcm.context_threshold",
             "config_yaml:lcm.context_threshold",
         }
         route_model = self.model if model is None else model
