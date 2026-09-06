@@ -118,3 +118,28 @@ def test_all_restricted_maintenance_commands_are_denied():
     engine=SimpleNamespace(_config=SimpleNamespace(restrict_to_conversation=True))
     for command in ('doctor','doctor clean','doctor clean apply','doctor clean lifecycle apply','doctor repair','doctor repair apply','doctor source','doctor source apply','doctor retention','backup','rotate','rotate apply','preset show','preset suggest','preset apply default'):
         assert 'require operator access' in handle_lcm_command(command,engine),command
+
+
+def test_restricted_status_never_calls_global_diagnostics(tmp_path,monkeypatch):
+    from hermes_lcm.tools import lcm_status,lcm_inspect
+    from hermes_lcm.command import handle_lcm_command
+    engine=_engine(tmp_path/'status.db','mine','mine-session')
+    foreign=_engine(tmp_path/'status.db','foreign','FOREIGN-SESSION-CANARY')
+    try:
+        engine.ingest([{'role':'user','content':'own context'}])
+        foreign.ingest([{'role':'user','content':'foreign context'}])
+        def global_query():
+            raise AssertionError('global diagnostics must not run')
+        monkeypatch.setattr(engine,'get_status',global_query)
+        for output in [lcm_status({},engine=engine),lcm_inspect({},engine=engine),engine.handle_tool_call('lcm_status',{}),handle_lcm_command('',engine),handle_lcm_command('status',engine)]:
+            data=json.loads(output)
+            assert data['conversation_id']=='mine'
+            assert 'FOREIGN-SESSION-CANARY' not in output
+            assert data['store']['messages']==1
+    finally:
+        engine.shutdown();foreign.shutdown()
+    unbound=_engine(tmp_path/'unbound-status.db')
+    try:
+        for command in ['', 'status']:
+            assert 'unbound' in json.loads(handle_lcm_command(command,unbound))['error']
+    finally:unbound.shutdown()

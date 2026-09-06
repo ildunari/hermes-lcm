@@ -1688,6 +1688,13 @@ def _preset_text(tokens: list[str], engine) -> str:
 
 def handle_lcm_command(raw_args: str | None, engine) -> str:
     tokens = [part.strip() for part in (raw_args or "").strip().split() if part.strip()]
+    if bool(getattr(getattr(engine, "_config", None), "restrict_to_conversation", False)):
+        if not tokens or (tokens[0].lower() == "status" and len(tokens) == 1):
+            from .tools import lcm_status
+            return lcm_status({}, engine=engine)
+        if tokens[0].lower() == "help":
+            return _help_text()
+        return "LCM database maintenance commands require operator access."
     if not tokens:
         return _status_text(engine)
 

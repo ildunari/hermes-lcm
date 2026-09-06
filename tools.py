@@ -106,6 +106,26 @@ def _conversation_scope(
     return current, None
 
 
+def _restricted_status(engine, args):
+    """Small contact-only diagnostic; never call database-wide get_status()."""
+    conversation_id, error = _conversation_scope(engine, args)
+    if error:
+        return error
+    row = engine._store.connection.execute(
+        "SELECT COUNT(*), COALESCE(SUM(token_estimate),0) FROM messages WHERE conversation_id=?",
+        (conversation_id,),
+    ).fetchone()
+    nodes = _owned_nodes_for_session(engine, engine.current_session_id, conversation_id)
+    return json.dumps({
+        "read_only": True,
+        "session_id": engine.current_session_id,
+        "conversation_id": conversation_id,
+        "restrict_to_conversation": True,
+        "store": {"messages": int(row[0]), "estimated_tokens": int(row[1])},
+        "dag": {"total_nodes": len(nodes), "total_tokens": sum(n.token_count for n in nodes)},
+    })
+
+
 def _message_owned_by_conversation(row: dict[str, Any], conversation_id: str) -> bool:
     return bool(conversation_id) and str(row.get("conversation_id") or "").strip() == conversation_id
 
@@ -2376,6 +2396,8 @@ def lcm_inspect(args: Dict[str, Any], **kwargs) -> str:
     engine = _require_engine(kwargs)
     if engine is None:
         return json.dumps({"error": "LCM engine not initialized"})
+    if bool(getattr(engine._config, "restrict_to_conversation", False)):
+        return _restricted_status(engine, args)
     _, scope_error = _conversation_scope(engine, args)
     if scope_error:
         return scope_error
@@ -2571,6 +2593,8 @@ def lcm_status(args: Dict[str, Any], **kwargs) -> str:
     engine = _require_engine(kwargs)
     if engine is None:
         return json.dumps({"error": "LCM engine not initialized"})
+    if bool(getattr(engine._config, "restrict_to_conversation", False)):
+        return _restricted_status(engine, args)
     _, scope_error = _conversation_scope(engine, args)
     if scope_error:
         return scope_error
