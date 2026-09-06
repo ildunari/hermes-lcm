@@ -277,6 +277,18 @@ def _scan_clean_candidates(engine) -> dict[str, Any]:
     }
 
 
+def _restricted_cleanup_denial(engine, command: str) -> str | None:
+    if not bool(getattr(getattr(engine, "_config", None), "restrict_to_conversation", False)):
+        return None
+    return "\n".join([
+        f"LCM {command}",
+        "status: denied",
+        "error: doctor cleanup is unavailable while conversation restriction is enabled",
+        "note: read-only retrieval remains available for the current conversation",
+        "note: no rows were changed",
+    ])
+
+
 def _scan_retention_candidates(engine) -> dict[str, Any]:
     now = datetime.now().timestamp()
     # SQL is scoped to the foreground session so /lcm doctor retention
@@ -1160,6 +1172,9 @@ def _doctor_text(engine) -> str:
 
 
 def _doctor_clean_text(engine) -> str:
+    denied = _restricted_cleanup_denial(engine, "doctor clean")
+    if denied:
+        return denied
     scan = _scan_clean_candidates(engine)
     if scan["error"]:
         return "\n".join([
@@ -1320,6 +1335,9 @@ def _delete_clean_candidates_atomically(engine, session_ids: set[str]) -> dict[s
 
 
 def _doctor_clean_apply_text(engine) -> str:
+    denied = _restricted_cleanup_denial(engine, "doctor clean apply")
+    if denied:
+        return denied
     if not getattr(getattr(engine, "_config", None), "doctor_clean_apply_enabled", False):
         return "\n".join([
             "LCM doctor clean apply",
@@ -1388,6 +1406,9 @@ def _doctor_clean_apply_text(engine) -> str:
 
 
 def _doctor_clean_lifecycle_text(engine) -> str:
+    denied = _restricted_cleanup_denial(engine, "doctor clean lifecycle")
+    if denied:
+        return denied
     count = engine._lifecycle.row_count()
     protected = {str(getattr(engine, "_session_id", "") or "")}
     protected = {s for s in protected if s}
@@ -1443,6 +1464,9 @@ def _doctor_clean_lifecycle_text(engine) -> str:
 
 
 def _doctor_clean_lifecycle_apply_text(engine) -> str:
+    denied = _restricted_cleanup_denial(engine, "doctor clean lifecycle apply")
+    if denied:
+        return denied
     if not getattr(getattr(engine, "_config", None), "doctor_clean_apply_enabled", False):
         return "\n".join([
             "LCM doctor clean lifecycle apply",

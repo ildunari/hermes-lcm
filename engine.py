@@ -3148,6 +3148,10 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
         ]
 
     def handle_tool_call(self, name: str, args: Dict[str, Any], **kwargs) -> str:
+        if bool(getattr(self._config, "restrict_to_conversation", False)):
+            _, scope_error = lcm_tools._conversation_scope(self, args)
+            if scope_error:
+                return scope_error
         # Ingest live messages if passed (enables current-turn search)
         messages = kwargs.get("messages")
 
@@ -3266,6 +3270,9 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
             "provider": self.provider,
             "context_length_source": self._context_length_source,
             "configured_context_threshold": self._config.context_threshold,
+            "restrict_to_conversation": bool(
+                getattr(self._config, "restrict_to_conversation", False)
+            ),
             "context_threshold": self.context_threshold,
             "context_threshold_source": self._context_threshold_source,
             "context_threshold_autoraised": self._context_threshold_autoraised,

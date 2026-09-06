@@ -530,6 +530,7 @@ class MessageStore:
         roles: list[str] | None = None,
         time_from: float | None = None,
         time_to: float | None = None,
+        conversation_id: str | None = None,
     ) -> tuple[list[str], list[Any]]:
         where = ["session_id = ?"]
         args: list[Any] = [session_id]
@@ -543,6 +544,12 @@ class MessageStore:
         if time_to is not None:
             where.append("timestamp <= ?")
             args.append(time_to)
+        conversation_clause, conversation_args = _conversation_filter_clause(
+            "conversation_id", conversation_id
+        )
+        if conversation_clause:
+            where.append(conversation_clause)
+            args.extend(conversation_args)
         return where, args
 
     def count_session_load_messages(
@@ -552,6 +559,7 @@ class MessageStore:
         roles: list[str] | None = None,
         time_from: float | None = None,
         time_to: float | None = None,
+        conversation_id: str | None = None,
     ) -> int:
         """Count messages matching the lcm_load_session filter contract."""
         where, args = self._session_load_where(
@@ -559,6 +567,7 @@ class MessageStore:
             roles=roles,
             time_from=time_from,
             time_to=time_to,
+            conversation_id=conversation_id,
         )
         return int(
             self._conn.execute(
@@ -576,6 +585,7 @@ class MessageStore:
         roles: list[str] | None = None,
         time_from: float | None = None,
         time_to: float | None = None,
+        conversation_id: str | None = None,
     ) -> List[Dict[str, Any]]:
         """Load one ordered raw-message page for a session.
 
@@ -587,6 +597,7 @@ class MessageStore:
             roles=roles,
             time_from=time_from,
             time_to=time_to,
+            conversation_id=conversation_id,
         )
         where.append("store_id > ?")
         args.extend([after_store_id, limit])

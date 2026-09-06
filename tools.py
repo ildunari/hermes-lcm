@@ -83,9 +83,131 @@ def _require_engine(kwargs: Dict[str, Any]) -> "LCMEngine | None":
     return engine if engine is not None else None
 
 
-def _get_session_node(engine: "LCMEngine", node_id: int):
+def _conversation_scope(
+    engine: "LCMEngine", args: Dict[str, Any] | None = None
+) -> tuple[str | None, str | None]:
+    """Return the trusted conversation scope, or a JSON error payload.
+
+    ``conversation_id`` from tool arguments is only a claim to validate. The
+    runtime engine binding is the sole source of truth.
+    """
+    if not bool(getattr(engine._config, "restrict_to_conversation", False)):
+        return None, None
+    current = str(getattr(engine, "current_conversation_id", "") or "").strip()
+    if not current:
+        return None, json.dumps({
+            "error": "LCM conversation scope is restricted but the engine is unbound",
+        })
+    requested = str((args or {}).get("conversation_id") or "").strip()
+    if requested and requested != current:
+        return None, json.dumps({
+            "error": "conversation_id does not belong to the current conversation",
+        })
+    return current, None
+
+
+def _message_owned_by_conversation(row: dict[str, Any], conversation_id: str) -> bool:
+    return bool(conversation_id) and str(row.get("conversation_id") or "").strip() == conversation_id
+
+
+def _node_owned_by_conversation(
+    engine: "LCMEngine",
+    node,
+    conversation_id: str,
+    *,
+    visited: set[int] | None = None,
+    remaining: list[int] | None = None,
+) -> bool:
+    """Validate all bounded DAG descendants before exposing a summary."""
+    if not node or not conversation_id:
+        return False
+    visited = visited if visited is not None else set()
+    remaining = remaining if remaining is not None else [512]
+    node_id = int(node.node_id)
+    if node_id in visited or remaining[0] <= 0 or not node.source_ids:
+        return False
+    visited.add(node_id)
+    remaining[0] -= 1
+    if node.source_type == "messages":
+        try:
+            source_ids = [int(source_id) for source_id in node.source_ids]
+        except (TypeError, ValueError, OverflowError):
+            return False
+        rows = engine._store.get_batch(source_ids)
+        return len(rows) == len(source_ids) and all(
+            _message_owned_by_conversation(rows.get(source_id, {}), conversation_id)
+            for source_id in source_ids
+        )
+    if node.source_type == "nodes":
+        try:
+            child_ids = [int(source_id) for source_id in node.source_ids]
+        except (TypeError, ValueError, OverflowError):
+            return False
+        return all(
+            _node_owned_by_conversation(
+                engine,
+                engine._dag.get_node(source_id),
+                conversation_id,
+                visited=visited,
+                remaining=remaining,
+            )
+            for source_id in child_ids
+        )
+    return False
+
+
+def _session_owned_by_conversation(
+    engine: "LCMEngine", session_id: str, conversation_id: str
+) -> bool:
+    if not session_id or not conversation_id:
+        return False
+    row = engine._store.connection.execute(
+        "SELECT 1 FROM messages WHERE session_id = ? AND conversation_id = ? LIMIT 1",
+        (session_id, conversation_id),
+    ).fetchone()
+    if row:
+        return True
+    return any(
+        _node_owned_by_conversation(engine, node, conversation_id)
+        for node in engine._dag.get_session_nodes(session_id)
+    )
+
+
+def _owned_nodes_for_session(
+    engine: "LCMEngine", session_id: str, conversation_id: str
+) -> list[Any]:
+    return [
+        node
+        for node in engine._dag.get_session_nodes(session_id)
+        if _node_owned_by_conversation(engine, node, conversation_id)
+    ]
+
+
+def _externalized_ref_owned(
+    engine: "LCMEngine", ref: str, payload: dict[str, Any], conversation_id: str
+) -> bool:
+    payload_session_id = str(payload.get("session_id") or "").strip()
+    if not payload_session_id or not conversation_id:
+        return False
+    rows = engine._store.connection.execute(
+        "SELECT conversation_id, content, tool_calls FROM messages WHERE session_id = ?",
+        (payload_session_id,),
+    ).fetchall()
+    for row in rows:
+        if str(row[0] or "").strip() != conversation_id:
+            continue
+        for value in (row[1] or "", row[2] or ""):
+            value = str(value)
+            if ref in extract_ingest_externalized_refs(value) or ref in extract_externalized_refs(value):
+                return True
+    return False
+
+
+def _get_session_node(engine: "LCMEngine", node_id: int, conversation_id: str | None = None):
     node = engine._dag.get_node(node_id)
     if node is None or node.session_id != engine.current_session_id:
+        return None
+    if conversation_id is not None and not _node_owned_by_conversation(engine, node, conversation_id):
         return None
     return node
 
@@ -99,6 +221,11 @@ def _get_externalized_payload(
     payload = load_externalized_payload(ref, config=engine._config, hermes_home=engine._hermes_home)
     if payload is None:
         return None
+    if bool(getattr(engine._config, "restrict_to_conversation", False)):
+        conversation_id = str(getattr(engine, "current_conversation_id", "") or "").strip()
+        if not _externalized_ref_owned(engine, ref, payload, conversation_id):
+            return None
+        return payload
     payload_session_id = payload.get("session_id") or ""
     allowed = allowed_session_ids or {engine.current_session_id}
     if payload_session_id and payload_session_id not in allowed:
@@ -957,10 +1084,17 @@ def lcm_load_session(args: Dict[str, Any], **kwargs) -> str:
     engine = _require_engine(kwargs)
     if engine is None:
         return json.dumps({"error": "LCM engine not initialized"})
+    conversation_scope, scope_error = _conversation_scope(engine, args)
+    if scope_error:
+        return scope_error
 
     session_id = str(args.get("session_id") or "").strip()
     if not session_id:
         return json.dumps({"error": "session_id is required"})
+    if conversation_scope is not None and not _session_owned_by_conversation(
+        engine, session_id, conversation_scope
+    ):
+        return json.dumps({"error": "session_id does not belong to the current conversation"})
 
     raw_limit_arg = args.get("limit", _LCM_LOAD_SESSION_DEFAULT_LIMIT)
     parsed_limit, limit_error = _parse_strict_int(raw_limit_arg, "limit")
@@ -1004,6 +1138,7 @@ def lcm_load_session(args: Dict[str, Any], **kwargs) -> str:
         roles=roles or None,
         time_from=time_from,
         time_to=time_to,
+        conversation_id=conversation_scope,
     )
     rows = engine._store.load_session_page(
         session_id,
@@ -1012,6 +1147,7 @@ def lcm_load_session(args: Dict[str, Any], **kwargs) -> str:
         roles=roles or None,
         time_from=time_from,
         time_to=time_to,
+        conversation_id=conversation_scope,
     )
     page_rows = rows[:limit]
     has_more = len(rows) > limit
@@ -1055,6 +1191,9 @@ def lcm_grep(args: Dict[str, Any], **kwargs) -> str:
     engine = _require_engine(kwargs)
     if engine is None:
         return json.dumps({"error": "LCM engine not initialized"})
+    conversation_scope, scope_error = _conversation_scope(engine, args)
+    if scope_error:
+        return scope_error
 
     query = args.get("query", "").strip()
     if not query:
@@ -1075,7 +1214,11 @@ def lcm_grep(args: Dict[str, Any], **kwargs) -> str:
         str(raw_session_id_arg).strip() if raw_session_id_arg is not None else ""
     )
     source = str(args.get("source") or "").strip() or None
-    conversation_id = str(args.get("conversation_id") or "").strip() or None
+    conversation_id = (
+        conversation_scope
+        if conversation_scope is not None
+        else str(args.get("conversation_id") or "").strip() or None
+    )
     role, role_error = _parse_grep_role(args.get("role"))
     if role_error:
         return json.dumps({"error": role_error})
@@ -1135,6 +1278,10 @@ def lcm_grep(args: Dict[str, Any], **kwargs) -> str:
 
     current_session_id = engine.current_session_id
     has_current_session = bool(current_session_id)
+    if conversation_scope is not None and session_scope == "session" and not _session_owned_by_conversation(
+        engine, explicit_session_id, conversation_scope
+    ):
+        return json.dumps({"error": "session_id does not belong to the current conversation"})
     results: list[Dict[str, Any]] = []
 
     try:
@@ -1176,7 +1323,16 @@ def lcm_grep(args: Dict[str, Any], **kwargs) -> str:
     # contract would push this tool toward a memory-system shape rather than
     # a plugin-local archive search. Raw-message hits remain expandable across
     # sessions via lcm_expand(store_id=...).
-    if session_scope == "current" and not raw_message_filter_active:
+    summary_search_allowed = session_scope == "current" and (
+        (
+            conversation_scope is not None
+            and role is None
+            and time_from is None
+            and time_to is None
+        )
+        or (conversation_scope is None and not raw_message_filter_active)
+    )
+    if summary_search_allowed:
         try:
             node_hits = engine._dag.search(
                 query,
@@ -1186,6 +1342,10 @@ def lcm_grep(args: Dict[str, Any], **kwargs) -> str:
                 source=source,
             )
             for node in node_hits:
+                if conversation_scope is not None and not _node_owned_by_conversation(
+                    engine, node, conversation_scope
+                ):
+                    continue
                 results.append(
                     {
                         "type": "summary",
@@ -1258,6 +1418,9 @@ def lcm_describe(args: Dict[str, Any], **kwargs) -> str:
     engine = _require_engine(kwargs)
     if engine is None:
         return json.dumps({"error": "LCM engine not initialized"})
+    conversation_scope, scope_error = _conversation_scope(engine, args)
+    if scope_error:
+        return scope_error
 
     externalized_ref = str(args.get("externalized_ref") or "").strip()
     if externalized_ref:
@@ -1283,21 +1446,40 @@ def lcm_describe(args: Dict[str, Any], **kwargs) -> str:
     session_id = engine.current_session_id
 
     if node_id is not None:
-        node = _get_session_node(engine, node_id)
+        node = _get_session_node(engine, node_id, conversation_scope)
+        if conversation_scope is not None and node is None and engine._dag.get_node(node_id) is not None:
+            return json.dumps({"error": f"Node {node_id} does not belong to the current conversation"})
         if node is None:
             return json.dumps({"error": f"Node {node_id} not found in current session"})
         info = engine._dag.describe_subtree(node_id)
         return json.dumps(info)
 
-    depth_stats = engine._dag.get_session_depth_stats(session_id)
-    depth_samples = engine._dag.get_session_depth_samples(
-        session_id,
-        per_depth_limit=20,
-        depths=list(depth_stats),
-    )
+    if conversation_scope is not None:
+        owned_nodes = _owned_nodes_for_session(engine, session_id, conversation_scope)
+        depth_stats: dict[int, dict[str, int]] = {}
+        depth_samples: dict[int, list[Any]] = {}
+        for node in owned_nodes:
+            stats = depth_stats.setdefault(node.depth, {"count": 0, "tokens": 0, "source_tokens": 0})
+            stats["count"] += 1
+            stats["tokens"] += int(node.token_count or 0)
+            stats["source_tokens"] += int(node.source_token_count or 0)
+            depth_samples.setdefault(node.depth, []).append(node)
+            depth_samples[node.depth] = depth_samples[node.depth][:20]
+        store_message_count = engine._store.connection.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ? AND conversation_id = ?",
+            (session_id, conversation_scope),
+        ).fetchone()[0]
+    else:
+        depth_stats = engine._dag.get_session_depth_stats(session_id)
+        depth_samples = engine._dag.get_session_depth_samples(
+            session_id,
+            per_depth_limit=20,
+            depths=list(depth_stats),
+        )
+        store_message_count = engine._store.get_session_count(session_id)
     overview = {
         "session_id": session_id,
-        "store_message_count": engine._store.get_session_count(session_id),
+        "store_message_count": store_message_count,
         "depths": {},
     }
 
@@ -1335,6 +1517,9 @@ def lcm_expand(args: Dict[str, Any], **kwargs) -> str:
     engine = _require_engine(kwargs)
     if engine is None:
         return json.dumps({"error": "LCM engine not initialized"})
+    conversation_scope, scope_error = _conversation_scope(engine, args)
+    if scope_error:
+        return scope_error
 
     externalized_ref = str(args.get("externalized_ref") or "").strip()
     raw_store_id_arg = args.get("store_id")
@@ -1400,6 +1585,10 @@ def lcm_expand(args: Dict[str, Any], **kwargs) -> str:
         stored = engine._store.get(store_id)
         if stored is None:
             return json.dumps({"error": f"Message store_id {store_id} not found"})
+        if conversation_scope is not None and not _message_owned_by_conversation(
+            stored, conversation_scope
+        ):
+            return json.dumps({"error": f"Message store_id {store_id} does not belong to the current conversation"})
         transcript_content = stored.get("content", "") or ""
         sliced = _slice_content_for_response(transcript_content, max_tokens, content_offset)
         engine_session_id = engine.current_session_id
@@ -1467,7 +1656,9 @@ def lcm_expand(args: Dict[str, Any], **kwargs) -> str:
 
     node_id = raw_node_id_arg
 
-    node = _get_session_node(engine, node_id)
+    node = _get_session_node(engine, node_id, conversation_scope)
+    if conversation_scope is not None and node is None and engine._dag.get_node(node_id) is not None:
+        return json.dumps({"error": f"Node {node_id} does not belong to the current conversation"})
     if node is None:
         return json.dumps({"error": f"Node {node_id} not found in current session"})
 
@@ -1516,6 +1707,9 @@ def lcm_expand_query(args: Dict[str, Any], **kwargs) -> str:
     engine = _require_engine(kwargs)
     if engine is None:
         return json.dumps({"error": "LCM engine not initialized"})
+    conversation_scope, scope_error = _conversation_scope(engine, args)
+    if scope_error:
+        return scope_error
 
     prompt = str(args.get("prompt") or "").strip()
     if not prompt:
@@ -1554,12 +1748,27 @@ def lcm_expand_query(args: Dict[str, Any], **kwargs) -> str:
                 parsed_node_id = int(node_id)
             except (TypeError, ValueError):
                 return json.dumps({"error": "node_ids must contain only integers"})
-            node = _get_session_node(engine, parsed_node_id)
+            node = _get_session_node(engine, parsed_node_id, conversation_scope)
+            if conversation_scope is not None and node is None:
+                if engine._dag.get_node(parsed_node_id) is None:
+                    return json.dumps({"error": f"Node {parsed_node_id} not found in current session"})
+                return json.dumps({"error": f"Node {parsed_node_id} does not belong to the current conversation"})
             if node is not None:
                 nodes.append(node)
     elif query:
         nodes = engine._dag.search(query, session_id=engine.current_session_id, limit=max_results)
-        raw_results = engine._store.search(query, session_id=engine.current_session_id, limit=max_results)
+        if conversation_scope is not None:
+            nodes = [
+                node for node in nodes
+                if _node_owned_by_conversation(engine, node, conversation_scope)
+            ]
+        search_kwargs = {
+            "session_id": engine.current_session_id,
+            "limit": max_results,
+        }
+        if conversation_scope is not None:
+            search_kwargs["conversation_id"] = conversation_scope
+        raw_results = engine._store.search(query, **search_kwargs)
     else:
         return json.dumps({"error": "Provide either query or node_ids"})
 
@@ -2104,9 +2313,19 @@ def _inspect_externalized_payload_metadata(engine: "LCMEngine", ref: str, sessio
     return metadata
 
 
-def _inspect_externalized_refs(engine: "LCMEngine", session_id: str, limit: int) -> dict[str, Any]:
+def _inspect_externalized_refs(
+    engine: "LCMEngine", session_id: str, limit: int, conversation_id: str | None = None
+) -> dict[str, Any]:
     message_total = engine._store.get_session_count(session_id)
-    rows = engine._store.load_session_page(session_id, limit=_LCM_INSPECT_REF_SCAN_MESSAGE_LIMIT)
+    if conversation_id is not None:
+        message_total = engine._store.count_session_load_messages(
+            session_id, conversation_id=conversation_id
+        )
+    rows = engine._store.load_session_page(
+        session_id,
+        limit=_LCM_INSPECT_REF_SCAN_MESSAGE_LIMIT,
+        conversation_id=conversation_id,
+    )
     scan_truncated = message_total > len(rows)
     items: list[dict[str, Any]] = []
     total_known = 0
@@ -2157,6 +2376,9 @@ def lcm_inspect(args: Dict[str, Any], **kwargs) -> str:
     engine = _require_engine(kwargs)
     if engine is None:
         return json.dumps({"error": "LCM engine not initialized"})
+    _, scope_error = _conversation_scope(engine, args)
+    if scope_error:
+        return scope_error
 
     raw_limit_arg = args.get("limit", _LCM_INSPECT_DEFAULT_LIMIT)
     parsed_limit, limit_error = _parse_strict_int(raw_limit_arg, "limit")
@@ -2182,13 +2404,17 @@ def lcm_inspect(args: Dict[str, Any], **kwargs) -> str:
     runtime_identity = full_status.get("runtime_identity") or engine.get_runtime_identity()
     lifecycle = _inspect_lifecycle_state(engine, session_id, conversation_id)
 
+    totals_where = "session_id = ?"
+    totals_args: tuple[Any, ...] = (session_id,)
+    if conversation_id:
+        totals_where += " AND conversation_id = ?"
+        totals_args += (conversation_id,)
     store_totals_row = engine._store.connection.execute(
         """
         SELECT COUNT(*), MIN(store_id), MAX(store_id), COALESCE(SUM(token_estimate), 0)
         FROM messages
-        WHERE session_id = ?
-        """,
-        (session_id,),
+        WHERE """ + totals_where,
+        totals_args,
     ).fetchone()
     message_total = int(store_totals_row[0] or 0) if store_totals_row else 0
     min_store_id = store_totals_row[1] if store_totals_row else None
@@ -2196,13 +2422,32 @@ def lcm_inspect(args: Dict[str, Any], **kwargs) -> str:
     estimated_tokens = int(store_totals_row[3] or 0) if store_totals_row else 0
     fresh_tail_count = max(0, int(engine._config.fresh_tail_count or 0))
     fresh_tail_rows, fresh_tail_boundary = engine._get_session_fresh_tail(session_id)
+    if conversation_id is not None:
+        fresh_tail_rows = [
+            row for row in fresh_tail_rows
+            if _message_owned_by_conversation(row, conversation_id)
+        ]
+        fresh_tail_boundary = engine._fresh_tail_boundary(fresh_tail_rows)
     fresh_tail_display_rows = fresh_tail_rows[-limit:]
     fresh_tail_items = [
         _inspect_message_metadata(row)
         for row in fresh_tail_display_rows
     ]
 
-    depth_stats = engine._dag.get_session_depth_stats(session_id)
+    owned_nodes = (
+        _owned_nodes_for_session(engine, session_id, conversation_id)
+        if conversation_id is not None
+        else engine._dag.get_session_nodes(session_id)
+    )
+    if conversation_id is not None:
+        depth_stats = {}
+        for node in owned_nodes:
+            stats = depth_stats.setdefault(node.depth, {"count": 0, "tokens": 0, "source_tokens": 0})
+            stats["count"] += 1
+            stats["tokens"] += int(node.token_count or 0)
+            stats["source_tokens"] += int(node.source_token_count or 0)
+    else:
+        depth_stats = engine._dag.get_session_depth_stats(session_id)
     total_dag_nodes = sum(info["count"] for info in depth_stats.values())
     total_dag_tokens = sum(info["tokens"] for info in depth_stats.values())
     total_dag_source_tokens = sum(info["source_tokens"] for info in depth_stats.values())
@@ -2232,6 +2477,8 @@ def lcm_inspect(args: Dict[str, Any], **kwargs) -> str:
             "expand_hint_chars": len(row[9] or ""),
         }
         for row in latest_node_rows
+        if conversation_id is None
+        or _node_owned_by_conversation(engine, engine._dag.get_node(int(row[0])), conversation_id)
     ]
 
     highest_compacted_source_store_id = _inspect_highest_compacted_source_store_id(engine, session_id)
@@ -2300,7 +2547,7 @@ def lcm_inspect(args: Dict[str, Any], **kwargs) -> str:
             "depths": {f"d{depth}": info for depth, info in sorted(depth_stats.items())},
             "latest_nodes": latest_nodes,
         },
-        "externalized_refs": _inspect_externalized_refs(engine, session_id, limit),
+        "externalized_refs": _inspect_externalized_refs(engine, session_id, limit, conversation_id),
         "ingest_protection": full_status.get("ingest_protection"),
         "filters": {
             "session_keys": session_keys,
@@ -2324,6 +2571,9 @@ def lcm_status(args: Dict[str, Any], **kwargs) -> str:
     engine = _require_engine(kwargs)
     if engine is None:
         return json.dumps({"error": "LCM engine not initialized"})
+    _, scope_error = _conversation_scope(engine, args)
+    if scope_error:
+        return scope_error
 
     # Read the foreground view so a side-channel session that briefly owns
     # engine._session_id (cron tick inside the gateway process, debug probe,
@@ -2458,6 +2708,9 @@ def lcm_doctor(args: Dict[str, Any], **kwargs) -> str:
     engine = _require_engine(kwargs)
     if engine is None:
         return json.dumps({"error": "LCM engine not initialized"})
+    _, scope_error = _conversation_scope(engine, args)
+    if scope_error:
+        return scope_error
 
     checks: list[dict] = []
     # Diagnose the foreground session, not whatever side-channel session

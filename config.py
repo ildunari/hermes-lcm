@@ -322,6 +322,7 @@ ENV_FIELD_SPECS: tuple[_EnvFieldSpec, ...] = (
     _EnvFieldSpec("extraction_enabled", "LCM_EXTRACTION_ENABLED", bool),
     _EnvFieldSpec("extraction_model", "LCM_EXTRACTION_MODEL", str),
     _EnvFieldSpec("extraction_output_path", "LCM_EXTRACTION_OUTPUT_PATH", str),
+    _EnvFieldSpec("restrict_to_conversation", "LCM_RESTRICT_TO_CONVERSATION", bool),
     _EnvFieldSpec("sensitive_patterns_enabled", "LCM_SENSITIVE_PATTERNS_ENABLED", bool),
     _EnvFieldSpec("large_output_externalization_enabled", "LCM_LARGE_OUTPUT_EXTERNALIZATION_ENABLED", bool),
     _EnvFieldSpec("large_output_externalization_threshold_chars", "LCM_LARGE_OUTPUT_EXTERNALIZATION_THRESHOLD_CHARS", int),
@@ -547,6 +548,9 @@ class LCMConfig:
     reserve_tokens_floor: int = 0
 
     # -- Session and message filtering ---
+    # When enabled, retrieval tools are restricted to the trusted runtime
+    # conversation binding, including rows carried across sessions.
+    restrict_to_conversation: bool = False
     # Sessions to exclude from LCM storage entirely.
     ignore_session_patterns: list[str] = field(default_factory=list)
     # Sessions that may read carried-over LCM state but never write new data.
