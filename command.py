@@ -1693,6 +1693,8 @@ def handle_lcm_command(raw_args: str | None, engine) -> str:
 
     head = tokens[0].lower()
     rest = tokens[1:]
+    if bool(getattr(getattr(engine, "_config", None), "restrict_to_conversation", False)) and head not in {"status", "help"}:
+        return "LCM database maintenance commands require operator access."
 
     if head == "status":
         if rest:

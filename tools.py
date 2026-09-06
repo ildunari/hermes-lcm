@@ -2708,6 +2708,8 @@ def lcm_doctor(args: Dict[str, Any], **kwargs) -> str:
     engine = _require_engine(kwargs)
     if engine is None:
         return json.dumps({"error": "LCM engine not initialized"})
+    if bool(getattr(engine._config, "restrict_to_conversation", False)):
+        return json.dumps({"error": "LCM database diagnostics require operator access"})
     _, scope_error = _conversation_scope(engine, args)
     if scope_error:
         return scope_error

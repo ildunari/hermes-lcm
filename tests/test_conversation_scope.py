@@ -97,3 +97,24 @@ def test_restricted_mode_fails_closed_unbound_and_denies_cleanup(tmp_path):
         assert "denied" in _doctor_clean_apply_text(engine)
     finally:
         engine.shutdown()
+
+
+def test_restricted_doctor_does_not_expose_global_metadata(tmp_path):
+    import json
+    from hermes_lcm.config import LCMConfig
+    from hermes_lcm.engine import LCMEngine
+    from hermes_lcm.tools import lcm_doctor
+    engine=LCMEngine(config=LCMConfig(database_path=str(tmp_path/'doctor.db'),restrict_to_conversation=True))
+    try:
+        engine.on_session_start('mine',conversation_id='contact:mine',platform='bluebubbles')
+        for response in (lcm_doctor({},engine=engine),engine.handle_tool_call('lcm_doctor',{})):
+            assert json.loads(response)=={'error':'LCM database diagnostics require operator access'}
+    finally:engine.shutdown()
+
+
+def test_all_restricted_maintenance_commands_are_denied():
+    from types import SimpleNamespace
+    from hermes_lcm.command import handle_lcm_command
+    engine=SimpleNamespace(_config=SimpleNamespace(restrict_to_conversation=True))
+    for command in ('doctor','doctor clean','doctor clean apply','doctor clean lifecycle apply','doctor repair','doctor repair apply','doctor source','doctor source apply','doctor retention','backup','rotate','rotate apply','preset show','preset suggest','preset apply default'):
+        assert 'require operator access' in handle_lcm_command(command,engine),command
