@@ -2445,11 +2445,15 @@ def lcm_inspect(args: Dict[str, Any], **kwargs) -> str:
     fresh_tail_count = max(0, int(engine._config.fresh_tail_count or 0))
     fresh_tail_rows, fresh_tail_boundary = engine._get_session_fresh_tail(session_id)
     if conversation_id is not None:
+        unfiltered_tail_count = len(fresh_tail_rows)
         fresh_tail_rows = [
             row for row in fresh_tail_rows
             if _message_owned_by_conversation(row, conversation_id)
         ]
-        fresh_tail_boundary = engine._fresh_tail_boundary(fresh_tail_rows)
+        # Reapplying the cap to an already bounded tail erases the reason it
+        # was shortened. Recompute only when ownership actually changed it.
+        if len(fresh_tail_rows) != unfiltered_tail_count:
+            fresh_tail_boundary = engine._fresh_tail_boundary(fresh_tail_rows)
     fresh_tail_display_rows = fresh_tail_rows[-limit:]
     fresh_tail_items = [
         _inspect_message_metadata(row)
