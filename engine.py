@@ -4234,6 +4234,10 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
 
     @staticmethod
     def _protected_message_uses_raw_payload_active_stub(message: Dict[str, Any]) -> bool:
+        # Ingest may externalize instructions for durable storage, but the
+        # model must read active instructions before it can choose retrieval.
+        if message.get("role") in {"user", "system", "developer"}:
+            return False
         content = message.get("content")
         return isinstance(content, str) and content.startswith(
             "[Externalized payload: kind=raw_payload;"

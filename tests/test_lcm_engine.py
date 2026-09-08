@@ -7672,12 +7672,15 @@ class TestMessageFiltering:
         )
         try:
             first.on_session_start("session", platform="telegram", context_length=1000)
-            active = first.compress(
+            first.compress(
                 [{"role": "user", "content": "SECRET_PAYLOAD_MARKER externalized row " + "x" * 200}],
                 current_tokens=10_000,
             )
-            active_stub = {"role": "user", "content": active[0]["content"]}
-            ignored_store_id = first._store.get_session_messages("session")[0]["store_id"]
+            # Historical active contexts used the durable placeholder. Keep
+            # covering their migration even though new user turns stay inline.
+            stored = first._store.get_session_messages("session")[0]
+            active_stub = {"role": "user", "content": stored["content"]}
+            ignored_store_id = stored["store_id"]
             assert "Externalized payload:" in active_stub["content"]
         finally:
             first.shutdown()
@@ -7719,12 +7722,15 @@ class TestMessageFiltering:
         )
         try:
             first.on_session_start("session", platform="telegram", context_length=1000)
-            active = first.compress(
+            first.compress(
                 [{"role": "user", "content": "SECRET_PAYLOAD_MARKER externalized row " + "x" * 200}],
                 current_tokens=10_000,
             )
-            active_stub = {"role": "user", "content": active[0]["content"]}
-            ignored_store_id = first._store.get_session_messages("session")[0]["store_id"]
+            # Historical active contexts used the durable placeholder. Keep
+            # covering their migration even though new user turns stay inline.
+            stored = first._store.get_session_messages("session")[0]
+            active_stub = {"role": "user", "content": stored["content"]}
+            ignored_store_id = stored["store_id"]
         finally:
             first.shutdown()
 
@@ -8742,7 +8748,7 @@ class TestMessageFiltering:
             second.on_session_start("session", platform="telegram", context_length=1000)
             messages = [
                 {"role": "user", "content": placeholder},
-                {"role": "user", "content": "oversized raw payload " + "x" * 200},
+                {"role": "assistant", "content": "oversized raw payload " + "x" * 200},
             ]
 
             assert second.should_compress_preflight(messages) is True

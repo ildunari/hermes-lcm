@@ -6471,7 +6471,7 @@ class TestIngestExternalization:
 
         engine, output_dir = self._engine(tmp_path)
         content = "ACTIVE_RAW_NEEDLE:" + ("r" * 5000)
-        messages = [{"role": "user", "content": content}]
+        messages = [{"role": "assistant", "content": content}]
 
         active_context = engine.compress(messages)
 
@@ -6513,7 +6513,7 @@ class TestIngestExternalization:
     def test_preflight_requests_cleanup_for_oversized_raw_payload_stub(self, tmp_path):
         engine, _output_dir = self._engine(tmp_path)
         content = "PREFLIGHT_RAW_NEEDLE:" + ("r" * 5000)
-        messages = [{"role": "user", "content": content}]
+        messages = [{"role": "assistant", "content": content}]
 
         assert engine.should_compress_preflight(messages) is True
 
