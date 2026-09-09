@@ -291,6 +291,21 @@ def _parse_positive_int(value: Any, default: int) -> int:
     return max(1, _parse_int_value(value, default))
 
 
+def _selector_value(value: Any, name: str) -> tuple[Any | None, str | None]:
+    """Treat provider-filled zero as an omitted selector; validate every real selector."""
+    if value is None:
+        return None, None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return value, f"{name} must be a positive integer"
+    if parsed == 0:
+        return None, None
+    if parsed < 0:
+        return parsed, f"{name} must be a positive integer"
+    return parsed, None
+
+
 def _parse_optional_float(value: Any, name: str) -> tuple[float | None, str | None]:
     if value is None:
         return None, None
@@ -1542,8 +1557,11 @@ def lcm_expand(args: Dict[str, Any], **kwargs) -> str:
         return scope_error
 
     externalized_ref = str(args.get("externalized_ref") or "").strip()
-    raw_store_id_arg = args.get("store_id")
-    raw_node_id_arg = args.get("node_id")
+    raw_store_id_arg, store_id_error = _selector_value(args.get("store_id"), "store_id")
+    raw_node_id_arg, node_id_error = _selector_value(args.get("node_id"), "node_id")
+
+    if store_id_error or node_id_error:
+        return json.dumps({"error": store_id_error or node_id_error})
 
     modes_provided: list[str] = []
     if externalized_ref:

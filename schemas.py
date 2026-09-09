@@ -169,6 +169,7 @@ LCM_EXPAND = {
         "properties": {
             "node_id": {
                 "type": "integer",
+                "minimum": 1,
                 "description": (
                     "Summary node ID to expand. Current-session only — cross-session DAG expansion "
                     "is not supported in this version."
@@ -180,6 +181,7 @@ LCM_EXPAND = {
             },
             "store_id": {
                 "type": "integer",
+                "minimum": 1,
                 "description": (
                     "Raw message store_id to fetch. Works across sessions, so a store_id surfaced by "
                     "a cross-session lcm_grep result can be expanded directly. Returns the message's "

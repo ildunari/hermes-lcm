@@ -25907,6 +25907,41 @@ class TestHandleExpandStoreId:
         assert "error" in result
         assert "Provide only one" in result["error"]
 
+    def test_zero_selector_sentinels_do_not_conflict_with_externalized_ref(self, tmp_path):
+        from jsonschema import Draft7Validator
+        from hermes_lcm.schemas import LCM_EXPAND
+
+        content = "recover me " + "x" * 9000
+        engine = LCMEngine(config=LCMConfig(
+            database_path=str(tmp_path / "lcm.db"),
+            large_output_externalization_enabled=True,
+            large_output_externalization_threshold_chars=8000,
+        ), hermes_home=str(tmp_path))
+        engine._session_id = "test-session"
+        try:
+            engine.compress([{"role": "user", "content": content}])
+            ref = next((tmp_path / "lcm-large-outputs").glob("*.json")).name
+            malformed = {"externalized_ref": ref, "node_id": 0, "store_id": 0}
+            assert list(Draft7Validator(LCM_EXPAND["parameters"]).iter_errors(malformed))
+            result = json.loads(engine.handle_tool_call(
+                "lcm_expand",
+                malformed,
+            ))
+            assert result["content"] == content
+        finally:
+            engine.shutdown()
+
+    def test_two_positive_selectors_still_conflict(self, engine):
+        result = json.loads(engine.handle_tool_call(
+            "lcm_expand", {"node_id": 1, "store_id": 2},
+        ))
+        assert "Provide only one" in result["error"]
+
+    @pytest.mark.parametrize("name,value", [("node_id", -1), ("store_id", -1), ("node_id", "bad")])
+    def test_invalid_real_selector_is_rejected(self, engine, name, value):
+        result = json.loads(engine.handle_tool_call("lcm_expand", {name: value}))
+        assert result["error"] == f"{name} must be a positive integer"
+
     def test_no_modes_returns_error(self, engine):
         result = json.loads(engine.handle_tool_call("lcm_expand", {}))
         assert "error" in result

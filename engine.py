@@ -4182,6 +4182,14 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
             config=self._config,
             hermes_home=self._hermes_home,
         )
+        latest_user_index = next(
+            (
+                idx
+                for idx in range(len(messages) - 1, -1, -1)
+                if str(messages[idx].get("role") or "") == "user"
+            ),
+            None,
+        )
         recovery_tool_call_ids = self._active_replay_recovery_tool_call_ids(
             active_replay_messages
         )
@@ -4189,7 +4197,10 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
             messages_to_store_with_index,
             protected_messages,
         ):
-            if self._protected_message_uses_raw_payload_active_stub(protected_msg):
+            if self._protected_message_uses_raw_payload_active_stub(
+                protected_msg,
+                preserve_current_user=absolute_idx == latest_user_index,
+            ):
                 if active_replay_messages is replay_messages:
                     active_replay_messages = self._copy_active_replay_messages_preserving_generated_ids(
                         replay_messages
@@ -4219,6 +4230,41 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
             source=self._session_platform,
             conversation_id=self._conversation_id,
         )
+        # A user row that was current on the previous call becomes historical
+        # once a later user turn arrives. Re-project from durable rows so the
+        # cached active prefix does not keep that older oversized payload inline.
+        externalization_threshold = max(
+            1,
+            int(getattr(self._config, "large_output_externalization_threshold_chars", 0) or 0),
+        )
+        historical_cached_users = [
+            absolute_idx
+            for absolute_idx, original_msg in enumerate(messages[:cursor])
+            if (
+                str(original_msg.get("role") or "") == "user"
+                and absolute_idx != latest_user_index
+                and len(normalize_content_value(original_msg.get("content")) or "")
+                > externalization_threshold
+            )
+        ] if getattr(self._config, "large_output_externalization_enabled", False) else []
+        store_ids = (
+            self._get_store_id_map_for_messages(messages)
+            if historical_cached_users
+            else {}
+        )
+        for absolute_idx in historical_cached_users:
+            original_msg = messages[absolute_idx]
+            store_id = store_ids.get(id(original_msg))
+            stored = self._store.get(store_id) if store_id is not None else None
+            if not stored or not self._protected_message_uses_raw_payload_active_stub(stored):
+                continue
+            if active_replay_messages is replay_messages:
+                active_replay_messages = self._copy_active_replay_messages_preserving_generated_ids(
+                    replay_messages
+                )
+            active_message = dict(active_replay_messages[absolute_idx])
+            active_message["content"] = stored["content"]
+            active_replay_messages[absolute_idx] = active_message
         self._ingest_cursor = n
         self._compression_boundary_ingest_pending = False
         self._compression_boundary_active_placeholder_digest_budget = {}
@@ -4233,10 +4279,14 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
         return self._remember_active_replay_messages(messages, active_replay_messages)
 
     @staticmethod
-    def _protected_message_uses_raw_payload_active_stub(message: Dict[str, Any]) -> bool:
+    def _protected_message_uses_raw_payload_active_stub(
+        message: Dict[str, Any], *, preserve_current_user: bool = False,
+    ) -> bool:
         # Ingest may externalize instructions for durable storage, but the
         # model must read active instructions before it can choose retrieval.
-        if message.get("role") in {"user", "system", "developer"}:
+        if message.get("role") in {"system", "developer"}:
+            return False
+        if message.get("role") == "user" and preserve_current_user:
             return False
         content = message.get("content")
         return isinstance(content, str) and content.startswith(
