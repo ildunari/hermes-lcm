@@ -25937,7 +25937,7 @@ class TestHandleExpandStoreId:
         ))
         assert "Provide only one" in result["error"]
 
-    @pytest.mark.parametrize("name,value", [("node_id", -1), ("store_id", -1), ("node_id", "bad")])
+    @pytest.mark.parametrize("name,value", [("node_id", -1), ("store_id", -1), ("node_id", "bad"), ("node_id", 0.5), ("store_id", 1.5), ("node_id", True), ("store_id", False)])
     def test_invalid_real_selector_is_rejected(self, engine, name, value):
         result = json.loads(engine.handle_tool_call("lcm_expand", {name: value}))
         assert result["error"] == f"{name} must be a positive integer"

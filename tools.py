@@ -295,6 +295,8 @@ def _selector_value(value: Any, name: str) -> tuple[Any | None, str | None]:
     """Treat provider-filled zero as an omitted selector; validate every real selector."""
     if value is None:
         return None, None
+    if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
+        return value, f"{name} must be a positive integer"
     try:
         parsed = int(value)
     except (TypeError, ValueError, OverflowError):
