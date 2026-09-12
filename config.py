@@ -409,6 +409,11 @@ ENV_FIELD_SPECS: tuple[_EnvFieldSpec, ...] = (
     _EnvFieldSpec("rollup_aggregate_max_tokens", "LCM_ROLLUP_AGGREGATE_MAX_TOKENS", int),
     _EnvFieldSpec("rollup_builds_per_pass", "LCM_ROLLUP_BUILDS_PER_PASS", int),
     _EnvFieldSpec("rollup_maintenance_budget_ms", "LCM_ROLLUP_MAINTENANCE_BUDGET_MS", int),
+    _EnvFieldSpec("eternal_session_gc_enabled", "LCM_ETERNAL_SESSION_GC_ENABLED", bool),
+    _EnvFieldSpec("eternal_session_gc_retain_messages", "LCM_ETERNAL_SESSION_GC_RETAIN_MESSAGES", int),
+    _EnvFieldSpec("eternal_session_gc_min_age_hours", "LCM_ETERNAL_SESSION_GC_MIN_AGE_HOURS", float),
+    _EnvFieldSpec("eternal_session_gc_min_content_bytes", "LCM_ETERNAL_SESSION_GC_MIN_CONTENT_BYTES", int),
+    _EnvFieldSpec("eternal_session_gc_max_rows_per_run", "LCM_ETERNAL_SESSION_GC_MAX_ROWS_PER_RUN", int),
 )
 
 _PARSER_BY_TYPE = {
@@ -768,6 +773,26 @@ class LCMConfig:
     # Best-effort wall-clock budget checked between builds. A slow summarizer
     # may finish its current build and leave later rollups lagging until a future pass.
     rollup_maintenance_budget_ms: int = 5_000
+    # -- Eternal-session GC ---
+    # An eternal session (a hidden always-on bot chat, a long-lived assistant
+    # thread) never reaches session end or rollover, so none of the cleanup
+    # paths that bound database growth ever run and its raw rows accumulate
+    # forever. With this flag on, a post-compaction pass rewrites raw rows that
+    # a leaf summary already covers into compact tombstones. The store_id,
+    # role and tool linkage are preserved, so DAG lineage, expand lookups and
+    # positional replay reconciliation keep resolving the same rows.
+    # Opt-in: pruning trades verbatim recall of those rows for bounded growth.
+    eternal_session_gc_enabled: bool = False
+    # Newest N rows of the session are never pruned, whatever their coverage.
+    eternal_session_gc_retain_messages: int = 200
+    # Rows younger than this are never pruned, so a summary written moments ago
+    # cannot take its own sources with it before the turn settles.
+    eternal_session_gc_min_age_hours: float = 24.0
+    # Rows smaller than this (content bytes) are not worth a write.
+    eternal_session_gc_min_content_bytes: int = 2000
+    # Upper bound on rows rewritten per compaction, so the first run against a
+    # large database cannot stall a turn.
+    eternal_session_gc_max_rows_per_run: int = 200
 
     # -- Diagnostics ---
     # Field-level provenance for values loaded through from_env(). Manual

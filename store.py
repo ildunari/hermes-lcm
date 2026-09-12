@@ -3,9 +3,11 @@ from __future__ import annotations
 """Immutable-first message store — the source of truth.
 
 Every message is persisted durably in SQLite. The normal model is append-only,
-with one narrow opt-in exception: already-externalized summarized tool-result
-rows may be rewritten to compact GC tombstones while preserving the original
-row identity (`store_id`) for DAG/source lookup.
+with two narrow opt-in exceptions, both of which preserve the original row
+identity (`store_id`) for DAG/source lookup: already-externalized summarized
+tool-result rows may be rewritten to compact GC tombstones, and — for an
+eternal session that never reaches session end — summarized raw rows may be
+rewritten to eternal-session GC tombstones.
 """
 
 
@@ -49,6 +51,7 @@ from .search_query import (
     should_apply_directness_rank_adjustment,
 )
 from .message_content import normalize_content_value as _normalize_content_value
+from .externalize import ETERNAL_SESSION_GC_PREFIX
 from .tokens import count_message_tokens
 
 logger = logging.getLogger(__name__)
@@ -560,6 +563,104 @@ class MessageStore:
                 before_commit(self._conn, store_id)
             self._conn.commit()
             return True
+
+    def scan_eternal_gc_candidates(
+        self,
+        session_id: str,
+        *,
+        max_store_id: int,
+        retain_messages: int,
+        min_content_bytes: int,
+        max_timestamp: float,
+        limit: int,
+    ) -> List[tuple]:
+        """Rows an eternal-session GC may reclaim, biggest first.
+
+        Returns ``(store_id, role, content_bytes, node_id)`` for unpinned,
+        non-system rows of ``session_id`` that a depth-0 leaf summary already
+        covers. A row qualifies only when it sits at or below
+        ``max_store_id`` (the compaction frontier), is older than
+        ``max_timestamp``, carries at least ``min_content_bytes`` of content,
+        and is not among the newest ``retain_messages`` rows of the session.
+        Callers own the placeholder text and the decision to write.
+        """
+        if not session_id or max_store_id <= 0 or limit <= 0:
+            return []
+        return self._conn.execute(
+            """
+            SELECT m.store_id,
+                   m.role,
+                   LENGTH(CAST(m.content AS BLOB)) AS content_bytes,
+                   MIN(n.node_id) AS node_id
+            FROM messages m, summary_nodes n, json_each(n.source_ids) j
+            WHERE m.session_id = ?
+              AND n.session_id = m.session_id
+              AND n.source_type = 'messages'
+              AND CAST(j.value AS INTEGER) = m.store_id
+              AND m.store_id <= ?
+              AND m.pinned = 0
+              AND m.role != 'system'
+              AND m.timestamp <= ?
+              AND m.content IS NOT NULL
+              AND LENGTH(CAST(m.content AS BLOB)) >= ?
+              AND m.content NOT LIKE ? ESCAPE '\\'
+              AND m.store_id NOT IN (
+                  SELECT store_id FROM messages
+                  WHERE session_id = ?
+                  ORDER BY store_id DESC
+                  LIMIT ?
+              )
+            GROUP BY m.store_id
+            ORDER BY content_bytes DESC, m.store_id ASC
+            LIMIT ?
+            """,
+            (
+                session_id,
+                int(max_store_id),
+                float(max_timestamp),
+                int(min_content_bytes),
+                escape_like(ETERNAL_SESSION_GC_PREFIX) + "%",
+                session_id,
+                max(0, int(retain_messages)),
+                int(limit),
+            ),
+        ).fetchall()
+
+    def prune_summarized_message(self, store_id: int, placeholder: str) -> int:
+        """Rewrite one already-summarized row to a compact tombstone.
+
+        Returns the content bytes reclaimed, or 0 when the row is missing,
+        pinned, a system message, or already no larger than the placeholder.
+        Role, tool linkage and ``store_id`` survive the rewrite so DAG source
+        lineage and positional replay reconciliation still resolve the row.
+        """
+        with self._write_lock:
+            row = self._conn.execute(
+                "SELECT role, pinned, content, tool_call_id FROM messages WHERE store_id = ?",
+                (store_id,),
+            ).fetchone()
+            if row is None:
+                return 0
+            role, pinned, current_content, tool_call_id = row
+            if bool(pinned) or role == "system":
+                return 0
+            current_bytes = len((current_content or "").encode("utf-8"))
+            placeholder_bytes = len(placeholder.encode("utf-8"))
+            if current_bytes <= placeholder_bytes:
+                return 0
+            placeholder_tokens = count_message_tokens(
+                {
+                    "role": role,
+                    "content": placeholder,
+                    "tool_call_id": tool_call_id,
+                }
+            )
+            self._conn.execute(
+                "UPDATE messages SET content = ?, token_estimate = ? WHERE store_id = ?",
+                (placeholder, placeholder_tokens, store_id),
+            )
+            self._conn.commit()
+            return current_bytes - placeholder_bytes
 
     def pin(self, store_id: int) -> None:
 

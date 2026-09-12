@@ -972,6 +972,9 @@ class CompactionMixin:
         )
         self._last_compression_status = "compacted"
         self._last_compression_noop_reason = ""
+        # Eternal sessions never reach session end or rollover, so this is the
+        # only point at which their already-summarized raw rows can be reclaimed.
+        self._maybe_eternal_session_gc()
         if recovery_assembly_cap is None:
             self._last_overflow_recovery_failed = False
         else:

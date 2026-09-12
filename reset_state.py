@@ -15,6 +15,7 @@ class ResetStateMixin:
         Safe to call on boundary skip because it does not affect compaction progress.
         """
         self.compression_count = 0
+        self._lcm_note_applied = False
         self.last_prompt_tokens = 0
         self.last_completion_tokens = 0
         self.last_total_tokens = 0

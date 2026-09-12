@@ -4,7 +4,18 @@ This repo also publishes GitHub Releases. This file is the repo-root release sur
 
 ## Unreleased
 
-No additional changes yet.
+- Added an opt-in eternal-session GC (`LCM_ETERNAL_SESSION_GC_ENABLED`, with
+  `_RETAIN_MESSAGES`, `_MIN_AGE_HOURS`, `_MIN_CONTENT_BYTES` and
+  `_MAX_ROWS_PER_RUN` bounds). Raw-row cleanup previously ran only at session
+  end or rollover, so a session that never ends grew its `messages` table
+  without limit. The new pass runs after a compaction and rewrites
+  already-summarized raw rows to compact tombstones that keep `store_id`, role
+  and tool linkage intact.
+- Fixed the LCM system-prompt note being lost for the rest of a session when
+  the host rebuilds its system prompt. The note was applied only on the first
+  compaction, so a capability-epoch rebuild dropped every mention of
+  `lcm_grep`, `lcm_describe` and `lcm_expand`. It is now re-applied whenever a
+  prompt LCM has already annotated comes back without it.
 
 ## v0.21.0-rc2 - 2026-08-05
 
