@@ -437,10 +437,13 @@ class CompactionMixin:
         # Step 1: Ingest new messages into the immutable store. Work from a
         # replay-safe view so quarantined assistant loops do not enter summaries
         # or provider context after the durable row has been written.
-        working_messages = self._ingest_messages(messages)
-        ingest_cleanup_changed_active_context = working_messages != messages
+        # Consume the one-shot preflight handoff before the fallible ingest so
+        # a transient ingest failure cannot leave a stale flag that diverts a
+        # later threshold-crossed compress() into the cleanup-only path.
         preflight_cleanup_only = bool(self._preflight_cleanup_only and not force_overflow)
         self._preflight_cleanup_only = False
+        working_messages = self._ingest_messages(messages)
+        ingest_cleanup_changed_active_context = working_messages != messages
         if preflight_cleanup_only:
             sanitized_messages = self._sanitize_active_context_messages(
                 working_messages,

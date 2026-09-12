@@ -579,3 +579,26 @@ def test_live_interceptor_keeps_media_and_recovery_results_inline(make_engine):
     assert cached is not None
     assert assembled_tool(cached, "media-live-call")["content"] == media_payload
     assert assembled_tool(cached, "recovery-live-call")["content"] == "recovered payload " * 100
+
+
+def test_flag_off_ingest_failure_clears_one_shot_cleanup_flag(make_engine, monkeypatch):
+    """Transient ingest failure must not leave a stale cleanup-only flag.
+
+    Regression test for PR #541 review feedback: compress() consumed the
+    one-shot _preflight_cleanup_only handoff only after _ingest_messages()
+    succeeded, so an exception there left the flag set and diverted the next
+    threshold-crossed compress() into the cleanup-only path.
+    """
+    engine = make_engine(large_output_active_replay_stubbing_enabled=False)
+    engine.threshold_tokens = 100_000
+    messages = [{"role": "user", "content": "plain sub-threshold payload"}]
+
+    engine._preflight_cleanup_only = True
+    monkeypatch.setattr(
+        engine, "_ingest_messages", Mock(side_effect=RuntimeError("boom-ingest"))
+    )
+
+    with pytest.raises(RuntimeError, match="boom-ingest"):
+        engine.compress(messages, current_tokens=1_000)
+
+    assert engine._preflight_cleanup_only is False
