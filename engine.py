@@ -40,6 +40,7 @@ from .escalation import (
     summarize_with_escalation,
 )
 from .externalize import (
+    build_eternal_session_gc_placeholder,
     build_transcript_gc_placeholder,
     extract_externalized_ref,
     find_externalized_payload_for_message,
@@ -357,6 +358,10 @@ _AUTO_FOCUS_TURN_MAX_CHARS = 260
 _AUTO_FOCUS_MAX_CHARS = 700
 
 _PRESERVED_TODO_CONTEXT_PREFIX = "[Your active task list was preserved across context compression]"
+# Stable opening of the LCM active-context note. Hosts carry the annotated
+# system prompt forward turn to turn, so this marker is how both the assembly
+# path and restart reconciliation recognise a prompt that already carries it.
+_LCM_NOTE_MARKER = "[Note: This conversation uses Lossless Context Management (LCM)."
 _LCM_MESSAGE_PREFIX_FINGERPRINT_LIMIT = 8
 
 
@@ -490,6 +495,10 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
         self.last_reasoning_tokens = 0
         self.cache_metrics_available = False
         self.compression_count = 0
+        # True once this engine has annotated a system prompt with the LCM
+        # note, which is what makes a later prompt arriving without it a
+        # rebuild rather than a prompt LCM has simply not reached yet.
+        self._lcm_note_applied = False
         # Wall-clock of the last leaf compaction (ms); surfaced via telemetry only.
         self._last_compaction_duration_ms = 0.0
         # run_agent.py reads these for preflight checks
@@ -4174,7 +4183,7 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
         content = normalize_content_value(msg.get("content")) or ""
         if role == "system":
             return (
-                "[Note: This conversation uses Lossless Context Management (LCM)." in content
+                _LCM_NOTE_MARKER in content
                 and "Earlier turns have been compacted into hierarchical summaries below." in content
             )
         if content.lstrip().startswith(_PRESERVED_OBJECTIVE_CONTEXT_PREFIX):
@@ -5025,6 +5034,80 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
                 store_id, placeholder, before_commit=_archive_in_rewrite_txn
             )
 
+    def _maybe_eternal_session_gc(self) -> Dict[str, int]:
+        """Reclaim summarized raw rows for a session that never ends.
+
+        Session end and rollover are the only points at which LCM prunes raw
+        rows, so a session that is never closed — a hidden always-on bot chat,
+        a long-lived assistant thread — grows its ``messages`` table without
+        bound even though every one of those rows is already represented by a
+        leaf summary. This pass runs after a successful compaction and rewrites
+        the largest already-summarized rows to compact tombstones.
+
+        Four guards keep it conservative: only rows at or below the compaction
+        frontier (``self._last_compacted_store_id``) that a depth-0 leaf node
+        actually cites are eligible; the newest ``retain_messages`` rows and
+        anything younger than ``min_age_hours`` are exempt; pinned and system
+        rows are never touched; and each run is capped at
+        ``max_rows_per_run`` rows. Off unless
+        ``eternal_session_gc_enabled`` is set — disabling the flag stops all
+        further pruning, though rows already reclaimed stay reclaimed.
+        """
+        empty = {"rows": 0, "bytes": 0}
+        config = self._config
+        if not getattr(config, "eternal_session_gc_enabled", False):
+            return empty
+        session_id = self._session_id
+        frontier = int(getattr(self, "_last_compacted_store_id", 0) or 0)
+        if not session_id or frontier <= 0:
+            return empty
+
+        min_age_hours = max(0.0, float(getattr(config, "eternal_session_gc_min_age_hours", 24.0)))
+        max_timestamp = time.time() - (min_age_hours * 3600.0)
+        try:
+            candidates = self._store.scan_eternal_gc_candidates(
+                session_id,
+                max_store_id=frontier,
+                retain_messages=int(getattr(config, "eternal_session_gc_retain_messages", 200)),
+                min_content_bytes=int(getattr(config, "eternal_session_gc_min_content_bytes", 2000)),
+                max_timestamp=max_timestamp,
+                limit=int(getattr(config, "eternal_session_gc_max_rows_per_run", 200)),
+            )
+        except Exception as exc:  # pragma: no cover - defensive, GC is optional
+            logger.warning("LCM eternal-session GC scan failed: %s", exc)
+            return empty
+
+        rows = 0
+        reclaimed = 0
+        for store_id, role, content_bytes, node_id in candidates:
+            placeholder = build_eternal_session_gc_placeholder(
+                role=str(role or ""),
+                store_id=int(store_id),
+                node_id=int(node_id),
+                content_bytes=int(content_bytes or 0),
+            )
+            try:
+                freed = self._store.prune_summarized_message(int(store_id), placeholder)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "LCM eternal-session GC could not prune store_id=%s: %s", store_id, exc
+                )
+                continue
+            if freed > 0:
+                rows += 1
+                reclaimed += freed
+
+        if rows:
+            logger.info(
+                "LCM eternal-session GC reclaimed %d bytes from %d summarized row(s) "
+                "at or below store_id=%d for session=%s",
+                reclaimed,
+                rows,
+                frontier,
+                session_id,
+            )
+        return {"rows": rows, "bytes": reclaimed}
+
     def _serialize_messages(self, messages: List[Dict[str, Any]]) -> str:
         """Serialize messages into labeled text for the summarizer."""
         parts = []
@@ -5644,6 +5727,18 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
         return normalized + note
 
     @staticmethod
+    def _content_has_lcm_note(content: Any) -> bool:
+        """True when a leading system prompt already carries the LCM note."""
+        if content is None:
+            return False
+        if isinstance(content, str):
+            return _LCM_NOTE_MARKER in content
+        normalized = normalize_content_value(content)
+        if normalized is None:
+            normalized = str(content)
+        return _LCM_NOTE_MARKER in normalized
+
+    @staticmethod
     def _is_preserved_todo_context_message(message: Dict[str, Any]) -> bool:
         content = text_content_for_pattern_matching(message.get("content")) or ""
         return content.lstrip().startswith(_PRESERVED_TODO_CONTEXT_PREFIX)
@@ -5890,16 +5985,25 @@ class LCMEngine(CompactionMixin, ResetStateMixin, ReconcileMixin, AuxiliarySessi
         # Leading anchor with optional LCM annotation. Only a true system prompt
         # is a safe permanent anchor; gateway sessions can start directly with
         # user messages, and those user turns must remain compactable.
+        #
+        # The note is re-applied whenever the prompt reaching us does not carry
+        # it, not only on the first compaction. A host that rebuilds its system
+        # prompt mid-session (a capability-epoch change, a profile edit) hands
+        # back a clean prompt, and a session that never ends never gets another
+        # first compaction to restore it, so the model would lose every mention
+        # of the retrieval tools for the rest of that session.
         leading_msg = system_msg.copy() if system_msg is not None else None
         if leading_msg is not None:
             if (
                 leading_msg.get("role") == "system"
-                and self.compression_count == 0
                 and include_lcm_note
+                and not self._content_has_lcm_note(leading_msg.get("content", ""))
+                and (self.compression_count == 0 or self._lcm_note_applied)
             ):
                 leading_msg["content"] = self._append_lcm_note_to_content(
                     leading_msg.get("content", "")
                 )
+                self._lcm_note_applied = True
             result.append(leading_msg)
 
         assembly_cap = (

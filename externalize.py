@@ -36,6 +36,10 @@ def _placeholder_metadata(value: Any) -> str:
 
 logger = logging.getLogger(__name__)
 
+# Opening of an eternal-session GC tombstone. The scan filters on it so a
+# reclaimed row is never rewritten a second time.
+ETERNAL_SESSION_GC_PREFIX = "[LCM eternal-session GC: "
+
 
 def _tool_call_stub(tool_call_id: str) -> str:
     return (tool_call_id or "tool-result").replace("/", "-").replace(":", "-")[:48]
@@ -562,6 +566,29 @@ def build_transcript_gc_placeholder(summary: Dict[str, Any]) -> str:
         f"[GC'd externalized tool output: tool_call_id={_placeholder_metadata(summary.get('tool_call_id') or '?')}; "
         f"chars={summary.get('content_chars', 0)}; ref={summary.get('ref', '')}]"
     )
+
+
+def build_eternal_session_gc_placeholder(
+    *,
+    role: str,
+    store_id: int,
+    node_id: int,
+    content_bytes: int,
+) -> str:
+    """Tombstone for a raw row reclaimed by the eternal-session GC.
+
+    Unlike the externalized-payload tombstones there is no ref to recover the
+    text from, so the placeholder names the summary node that carries the
+    meaning forward and the size that was reclaimed.
+    """
+    return (
+        f"{ETERNAL_SESSION_GC_PREFIX}summarized {_placeholder_metadata(role or '?')} message reclaimed; "
+        f"store_id={int(store_id)}; summary_node={int(node_id)}; bytes={int(content_bytes)}]"
+    )
+
+
+def is_eternal_session_gc_placeholder(text: str) -> bool:
+    return isinstance(text, str) and text.startswith(ETERNAL_SESSION_GC_PREFIX)
 
 
 def extract_externalized_ref(text: str) -> str | None:

@@ -238,6 +238,11 @@ environment variables:
 | `LCM_EMPTY_LIFECYCLE_GC_ENABLED` | `true` | Master toggle for automatic pruning of lifecycle rows for sessions that never ingested any messages or summary nodes |
 | `LCM_EMPTY_LIFECYCLE_GC_THRESHOLD` | `200` | Number of lifecycle rows at which the GC pass fires (default 200 so fresh installs skip the work) |
 | `LCM_EMPTY_LIFECYCLE_GC_MAX_AGE_HOURS` | `24` | Automatic GC only deletes empty lifecycle rows at least this old; set `0` only in trusted/test environments that intentionally want immediate empty-row pruning |
+| `LCM_ETERNAL_SESSION_GC_ENABLED` | `false` | Master toggle for eternal-session GC: after a compaction, rewrite already-summarized raw rows of a session that never ends to compact tombstones |
+| `LCM_ETERNAL_SESSION_GC_RETAIN_MESSAGES` | `200` | Newest N rows of the session that are never reclaimed, whatever their summary coverage |
+| `LCM_ETERNAL_SESSION_GC_MIN_AGE_HOURS` | `24` | Rows younger than this are never reclaimed |
+| `LCM_ETERNAL_SESSION_GC_MIN_CONTENT_BYTES` | `2000` | Rows smaller than this are left alone |
+| `LCM_ETERNAL_SESSION_GC_MAX_ROWS_PER_RUN` | `200` | Upper bound on rows rewritten per compaction |
 
 ### Evidence and adaptive retrieval (0.21 RC)
 
@@ -694,6 +699,37 @@ already-summarized tool-role rows to compact placeholders. It keeps the same
 `store_id`, keeps payload files, skips pinned messages, and preserves lossless
 recovery through `externalized_ref`. After GC, `lcm_grep` will not match the
 original giant tool blob text directly; search summaries or refs instead.
+
+### Eternal sessions
+
+LCM prunes raw rows at session end and at rollover. A session that never
+reaches either — a hidden always-on bot chat, a long-lived assistant thread —
+therefore keeps every raw row at full size for as long as it lives, even though
+a leaf summary already covers the old ones. One production profile database
+reached 131 MB this way.
+
+`LCM_ETERNAL_SESSION_GC_ENABLED=true` adds a pass after each successful
+compaction that rewrites the largest already-summarized raw rows to compact
+tombstones. It reclaims the bytes, not the row: `store_id`, role and tool
+linkage survive, so DAG source lineage, `lcm_expand` lookups and positional
+replay reconciliation still resolve the same rows, and the tombstone names the
+summary node that carries the meaning forward.
+
+A row is eligible only when all of the following hold. It sits at or below the
+compaction frontier, so nothing still in flight is touched. A depth-0 leaf node
+actually cites it. It is not pinned and not a `system` message. It is older than
+`LCM_ETERNAL_SESSION_GC_MIN_AGE_HOURS` and outside the newest
+`LCM_ETERNAL_SESSION_GC_RETAIN_MESSAGES` rows. It carries at least
+`LCM_ETERNAL_SESSION_GC_MIN_CONTENT_BYTES` of content. Each run stops at
+`LCM_ETERNAL_SESSION_GC_MAX_ROWS_PER_RUN` rows, so the first pass over a large
+database cannot stall a turn, and successive compactions drain the rest.
+
+This trades verbatim recall of those rows for bounded growth, so it stays off
+by default and belongs on sessions that are genuinely eternal. After GC,
+`lcm_grep` no longer matches the original text of a reclaimed row; search the
+summaries instead. Turning the flag back off stops all further pruning
+immediately, though rows already reclaimed stay reclaimed — take a backup
+(`/lcm backup`) before the first enabled run if you need the raw text later.
 
 ## Slash Commands
 
